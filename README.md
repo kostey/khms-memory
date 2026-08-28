@@ -11,9 +11,9 @@ session before the agent asks for them, and a **propose → review → approve**
 which background jobs may only propose and nothing enters the knowledge directory unreviewed.
 
 Status: extracted and generalized from a working single-operator deployment that has been
-running daily since mid-2026 (a robotics project; none of that project's knowledge is in this
-repo). The scripts here are the deployment's scripts with the paths parameterized and the
-domain specifics removed. Numbers marked "calibrate" are that deployment's values, not laws.
+running daily since mid-2026. The scripts here are the deployment's scripts with the paths
+parameterized and the domain specifics removed. Numbers marked "calibrate" are that
+deployment's values, not laws.
 
 ## Read next
 
@@ -55,9 +55,10 @@ KHMS's answers, in one line each:
   propose→review cycle. If you want KHMS cards to interoperate, map the frontmatter.
   Spec: <https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md> ·
   announcement: <https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing>
-- **Awesome Agent Memory** — a curated map of memory systems, benchmarks and papers for LLM
-  agents; the fastest way to see where a design like this sits among the alternatives:
-  <https://github.com/TeleAI-UAGI/Awesome-Agent-Memory>
+- **LLM Wiki** (Andrej Karpathy) — a pattern for LLM-built and LLM-maintained personal
+  knowledge bases: a persistent, compounding, interlinked wiki instead of per-query RAG.
+  The closest articulation of the idea this system grew from:
+  <https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f>
 - Papers this design was built against (each is one card's worth of the argument):
   - Generative Agents (reflection: periodically distilling observations into higher-level
     conclusions) — <https://arxiv.org/abs/2304.03442>

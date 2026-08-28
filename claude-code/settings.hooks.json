@@ -1,0 +1,63 @@
+{
+  "_comment": "Merge into ~/.claude/settings.json (user-wide) or .claude/settings.json (project). Replace PATH_TO_KHMS with your KHMS_ROOT — hook commands do not expand shell variables. Remove the _comment keys.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 PATH_TO_KHMS/tools/khms_hook.py",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 PATH_TO_KHMS/tools/khms_hook.py",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 PATH_TO_KHMS/tools/khms_hook.py",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 PATH_TO_KHMS/tools/khms_hook.py",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 PATH_TO_KHMS/tools/khms_hook.py",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

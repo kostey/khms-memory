@@ -1,0 +1,135 @@
+# Implementing KHMS in Claude Code
+
+Everything here is harness wiring. The memory itself is plain files and works without any of
+it; hooks are what turn "the agent could search its memory" into "the agent's memory reaches
+the agent whether or not it remembers to search".
+
+## Dependencies
+
+| Requirement | Used by | Notes |
+|---|---|---|
+| `python3` ≥ 3.8 | everything | no virtualenv needed |
+| `PyYAML` | `build_views.py`, `approve_inbox.py`, `precheck.sh`, `weekly_synthesis.sh` | `pip install pyyaml` |
+| `flock`, `timeout`, `find`, `date` (GNU coreutils/util-linux) | the pipeline drivers | present on any normal Linux; on macOS install `coreutils` and `flock` or run the pipeline in a container |
+| `git` | optional | only to feed the day's commits into the sweep |
+| a headless agent CLI (`claude -p …`) | the nightly and weekly drivers | set `KHMS_AGENT` if it is not `claude` |
+
+`khms_hook.py` and `khms_search.py` are **stdlib only** on purpose: the hook runs on every
+message and every tool call, so it must start fast and must never fail because an import broke.
+
+## Wire the hooks
+
+Merge [`settings.hooks.json`](settings.hooks.json) into `~/.claude/settings.json` (user-wide) or
+`.claude/settings.json` (per project), replacing `PATH_TO_KHMS` with your `$KHMS_ROOT`. Hooks do
+not expand `$VARS` in the command string, so the path is written out; that one absolute path is
+the only one in the whole system.
+
+| Event | Matcher | What the hook does |
+|---|---|---|
+| `SessionStart` | — | Reports an unreviewed inbox: "review it before other work". Silent when the inbox is clean. |
+| `UserPromptSubmit` | — | Scores the operator's message against the card base; injects up to two cards plus their correctors, and appends the reply directive (`recall:` / `verified:` lines). |
+| `PreToolUse` | `Bash` | Runs `precheck.sh` automatically for a named risky-command class (`rm -rf`, `rsync --delete`, `systemctl`, `git push --force`, `kubectl delete`, `terraform apply`, `DROP TABLE`, …). Otherwise scores the command text. |
+| `PreToolUse` | `Edit\|Write` | Scores the file path and the edited text — the moment before a change is when a gotcha card is worth most. |
+| `PostToolUse` | `Bash` | Scores the command plus up to three error lines from its output. |
+| `PostToolUseFailure` | `*` | Same, for calls that failed outright. This is the highest-yield event: an error string is a near-perfect query. |
+
+The hook returns `{"hookSpecificOutput": {"hookEventName": …, "additionalContext": …}}` — the
+text lands in the model's context for that turn. Printing nothing means "no injection", which is
+the common case and must stay cheap. Give each hook a `timeout` (15 s is generous; the scan is
+~0.1 s at a few thousand cards).
+
+## The budget, and why every part of it exists
+
+Injection is not free — it consumes context, and an agent that gets three irrelevant cards per
+message learns to ignore all of them. The parameters live at the top of `khms_hook.py`:
+
+- **Per-event score thresholds.** Higher for operator messages (18) than for tool errors (15):
+  an error string is a much sharper query than a sentence.
+- **At most two primary cards**, plus the principle one of them supports and whatever corrects
+  it, capped at 900 characters total.
+- **Rate cap: 3 injections per 10 minutes**, plus **one bypass ride** per window for a top hit
+  that clears the operator-message bar. Without the bypass the cap spends the window
+  first-come — and drops the best question of the hour because three routine ones preceded it.
+- **Dedup TTL: 12 hours per card per session.** Not "once per session": sessions run for days,
+  and a card injected on Monday stayed silent on Thursday for the query it was written for.
+- **Query cooldown: 15 minutes** for the same text, so a retry loop does not re-inject.
+- **Length damping** `score × min(1, (85/distinct_tokens)^0.5)`. The score is a sum of per-token
+  idf, so without this, long grab-bag cards win queries they have nothing to do with. The pivot
+  is the median distinct-token count of your own base — measure it, do not copy 85.
+
+**On a young base, lower the thresholds.** The defaults above assume a few thousand cards: the
+score is a sum of inverse-document-frequency weights, so on a base of twenty cards almost
+nothing reaches 18 and the floor never fires. Start around 8–10, watch `.inject.log` for a week,
+and raise them when injections start feeling like noise rather than help.
+
+**Everything the hook decides goes into `tools/.inject.log`**, including the silences, with the
+reason a card above the bar was not injected (`dedup`, `cap`, `threshold`). This is not
+optional decoration: a hook that quietly stops firing is indistinguishable from a quiet day, and
+"the good card was there and stayed silent" has to be diagnosable after the fact.
+
+Kill switch, when injections are in the way: `touch $KHMS_ROOT/tools/.hooks-off`, or export
+`KHMS_HOOKS_OFF=1`. Delete the file to re-enable. The hook also fails open on every exception:
+a broken memory system must never break the session it is trying to help.
+
+## Tuning `DOMAIN_RE`
+
+`khms_hook.py` has one regex you must edit for your own work: `DOMAIN_RE`, the list of words
+that mean "this text is about something the base might know". Tool events are only searched when
+they match it or contain an error. Too broad and every keystroke triggers a scan; too narrow and
+the floor never fires. Start from the tags in `memory/views/tags.md` that actually carry cards,
+then check `.inject.log` after a day of work: mostly `silent (below threshold)` means the regex
+is too broad, no lines at all means it is too narrow.
+
+## Cron
+
+```cron
+# nightly sweep — after the day's transcripts exist, before the operator's morning
+30 3 * * *  KHMS_ROOT=/path/to/base /path/to/base/tools/nightly_distill.sh  >> /path/to/base/tools/cron.log 2>&1
+# weekly synthesis — needs the week's inboxes to exist
+0  4 * * 0  KHMS_ROOT=/path/to/base /path/to/base/tools/weekly_synthesis.sh >> /path/to/base/tools/cron.log 2>&1
+```
+
+Cron gets a minimal environment: set `KHMS_ROOT` in the crontab line (as above), and set `HOME`
+if your agent CLI stores credentials under it. Both drivers are single-instance (`flock`) and
+both cap each model stage with `timeout` — an uncapped stage that hangs holds the lock forever,
+and then every following night exits "already running" without doing anything, which turns one
+lost night into all of them.
+
+**Alert on staleness, not on failure.** A run that dies leaves no proposal file, and "no inbox
+today" looks exactly like "a quiet day with nothing to distill". Check the age of
+`tools/.last-nightly` and `tools/.last-weekly` (both written only on success) and say something
+when they exceed a day and a week respectively.
+
+## Verifying the wiring
+
+```bash
+echo '{"hook_event_name":"SessionStart","session_id":"t"}' | python3 $KHMS_ROOT/tools/khms_hook.py
+echo '{"hook_event_name":"UserPromptSubmit","prompt":"why does the checksum keep failing","session_id":"t"}' \
+  | python3 $KHMS_ROOT/tools/khms_hook.py
+echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf ./build"},"session_id":"t"}' \
+  | python3 $KHMS_ROOT/tools/khms_hook.py
+tail $KHMS_ROOT/tools/.inject.log
+```
+
+The third one should print the precheck block if any card carries the `filesystem` tag. Nothing
+printed is a valid outcome for the first two on an empty base — check the log line, which always
+exists.
+
+Dry-run the pipeline without spending a single model token:
+
+```bash
+NIGHTLY_DRYRUN=1 $KHMS_ROOT/tools/nightly_distill.sh
+```
+
+It assembles every deterministic input and prints the two stages' INPUTS blocks verbatim. Use it
+whenever you change the driver: the most expensive pipeline defect in the reference deployment
+was a single missing line in an INPUTS list — a stage was asked to enforce grounding against a
+source it had never been handed — and it was invisible by inspection for two nights.
+
+## Cost, and where it goes
+
+Per day, in the reference deployment: the deterministic parts (transcript digest, journal
+concatenation, quote verification, view generation, every hook firing) cost **zero model
+tokens**. The two nightly model stages dominate; the weekly is one larger run. Watch the ratio
+rather than the absolute: when the extract stage costs more than the consolidate stage by a wide
+margin, its input is usually oversized rather than its job being hard.

@@ -68,8 +68,16 @@ QREPORT="$STAGING/nightly-$DATE-quotecheck.txt"
 JOURNAL="$ROOT/journal/$DATE.md"
 OUT="$ROOT/memory/inbox/$DATE.md"
 
+# A glob that matches nothing must not kill the night under `set -e`: the journal
+# and the git log are still worth distilling, and the empty digest has to be
+# ANNOUNCED rather than inferred later from a thin inbox. Check KHMS_TRANSCRIPTS
+# when you see this line — it is the most common misconfiguration.
 # shellcheck disable=SC2086
-python3 "$ROOT/tools/preprocess_transcripts.py" --since "$SINCE" $TRANSCRIPTS > "$DIGEST"
+if ! python3 "$ROOT/tools/preprocess_transcripts.py" --since "$SINCE" $TRANSCRIPTS \
+     > "$DIGEST" 2>> "$LOG"; then
+  echo "$(date -Is) WARNING: no transcripts matched '$TRANSCRIPTS' — digest EMPTY" >> "$LOG"
+  : > "$DIGEST"
+fi
 
 # Journal source = every journal file TOUCHED since the last run, concatenated.
 # Passing only today's file is an off-by-one that costs the whole point: at 03:30

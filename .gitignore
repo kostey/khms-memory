@@ -1,0 +1,22 @@
+# This repository ships tooling, not a base. A live base keeps its own git repo.
+__pycache__/
+*.pyc
+
+# Runtime artefacts, in case someone points KHMS_ROOT at a checkout of this repo:
+.next_id
+.cardlen.json
+.hooks-off
+.hook-state/
+.inject.log
+.recall.log
+.precheck.log
+.last-nightly
+.last-weekly
+.nightly.lock
+nightly.log
+cron.log
+memory/
+journal/
+plans/
+archive/
+MEMORY.md

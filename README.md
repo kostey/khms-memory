@@ -1,0 +1,73 @@
+# KHMS — a file-based long-term memory an agent can install into itself
+
+KHMS ("know-how management system") is a long-term memory for LLM agents made of plain
+markdown files in a git repository. Every piece of knowledge is one immutable **card** with
+YAML frontmatter — what kind of knowledge it is, how strongly it is evidenced, where it came
+from, and which other cards it is derived from, supports or contradicts. Cards are never
+edited and never deleted: a correction is a new card that *supersedes* the old one, and a
+refuted card stays visible as a signposted dead end. Around that storage layer sits the part
+that makes it work in practice — **hook-driven recall** that pushes relevant cards into the
+session before the agent asks for them, and a **propose → review → approve** pipeline in
+which background jobs may only propose and nothing enters the knowledge directory unreviewed.
+
+Status: extracted and generalized from a working single-operator deployment that has been
+running daily since mid-2026 (a robotics project; none of that project's knowledge is in this
+repo). The scripts here are the deployment's scripts with the paths parameterized and the
+domain specifics removed. Numbers marked "calibrate" are that deployment's values, not laws.
+
+## Read next
+
+- **Setting up memory for yourself?** → **[AGENTS.md](AGENTS.md)** — the one-pass bootstrap.
+- Want the whole model first? → [spec/khms-spec.md](spec/khms-spec.md).
+- Wiring it into Claude Code (hooks, cron, dependencies)? → [claude-code/](claude-code/README.md).
+- Want to see cards before writing any? → [examples/](examples/) (fictional weather-station domain).
+
+## For humans: what problem this solves
+
+An agent that works with someone for months keeps re-deriving the same conclusions, repeating
+documented dead ends, and stating yesterday's fact as today's. Context windows do not fix this
+— they are per-session and they are lossy. Vector-store "memory" mostly fixes recall of *text*,
+not the harder parts: whether a remembered claim was measured or merely reported, what refuted
+it, and who approved it into the record.
+
+KHMS's answers, in one line each:
+
+- **Cards, not chat logs.** One claim per file, typed (`fact`, `problem→solution`,
+  `decision→rationale`, `principle`, `policy`, …), so knowledge can be linked and counted.
+- **Epistemic levels.** Observations carry `evidence: measured | observed | reported` and a
+  source; rules are `derived` and must name what they were derived from. Confidence is
+  *computed* from that graph, never hand-asserted.
+- **Immutability.** No edits, no deletions. Corrections supersede; refutations stay readable,
+  because "we already tried that and it failed" is among the most valuable things memory holds.
+- **Retrieval as a floor plus a ceiling.** Hooks inject candidate cards automatically on a
+  budget (the floor, which runs whether or not the agent remembers to look); explicit recall
+  before hypotheses and proposals is the agent's own duty (the ceiling).
+- **Graduated review.** Cheap models propose into an inbox, a stronger stage consolidates,
+  and only an approving stage assigns IDs and writes into the knowledge directory.
+
+### Prior art and further reading
+
+- **Google Cloud's Open Knowledge Format (OKF)** — the closest thing to a standard for this
+  storage layer: a directory of markdown files with YAML frontmatter, one required field
+  (`type`), no runtime. KHMS's card storage converged on nearly the same shape independently;
+  what OKF (v0.1 June 2026, v0.2 July 2026) does not define is the epistemic and process layer
+  above it — evidence levels, mandatory provenance, refuted-not-deleted, computed belief, the
+  propose→review cycle. If you want KHMS cards to interoperate, map the frontmatter.
+  Spec: <https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md> ·
+  announcement: <https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing>
+- **Awesome Agent Memory** — a curated map of memory systems, benchmarks and papers for LLM
+  agents; the fastest way to see where a design like this sits among the alternatives:
+  <https://github.com/TeleAI-UAGI/Awesome-Agent-Memory>
+- Papers this design was built against (each is one card's worth of the argument):
+  - Generative Agents (reflection: periodically distilling observations into higher-level
+    conclusions) — <https://arxiv.org/abs/2304.03442>
+  - Mem0 (memory operations for LLM agents, incl. deletion of contradicted memories — KHMS
+    deliberately does the opposite) — <https://arxiv.org/html/2504.19413>
+  - Sleep-time compute (doing the distillation work between sessions, not during them) —
+    <https://arxiv.org/abs/2504.13171>
+  - Graphiti (temporal knowledge graph for agents; invalidation rather than deletion, at the
+    cost of requiring a graph database) — <https://github.com/getzep/graphiti>
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -236,6 +236,29 @@ def write_views(cards, reg, alias):
         f.write("# condense candidates (ranked; weekly review input)\n\n" + "\n".join(
             f"- {c['id']} score {c['condense']:.1f} — {c['title']}" for c in cand[:50]) + "\n")
 
+    # reverse correction index: "who corrects ME". The hook builds the same map
+    # in memory from the cards it has already loaded (khms_search.
+    # reverse_correctors), so this file is not what it reads — it is the
+    # human-readable half, and the place a review can see at a glance which
+    # corrections are actually wired up rather than merely written.
+    rev = {}
+    for c in cards.values():
+        for tgt in c["links"]["contradicts"]:
+            rev.setdefault(tgt, []).append(c)
+        for tgt in c["links"]["refuted_by"]:          # the corrected card's own edge
+            if tgt in cards:
+                rev.setdefault(c["id"], []).append(cards[tgt])
+        ss = c["links"]["supersedes"]                 # scalar per spec, list in the wild
+        for tgt in (ss if isinstance(ss, list) else [ss] if ss else []):
+            rev.setdefault(tgt, []).append(c)
+    L = ["# reverse correction index (who corrects whom — generated)", ""]
+    for tgt in sorted(rev):
+        L.append(f"- **{tgt}** {cards[tgt]['title'][:80] if tgt in cards else '(no such card)'}")
+        for cor in sorted({c["id"]: c for c in rev[tgt]}.values(), key=lambda c: c["id"]):
+            L.append(f"    ! corrected by {cor['id']} [{cor['status']}] — {cor['title'][:80]}")
+    with open(os.path.join(P.VIEWS, "correctors.md"), "w", encoding="utf-8") as f:
+        f.write("\n".join(L) + "\n")
+
     scopes = {}
     for c in cards.values():
         scopes[str(c["scope"])] = scopes.get(str(c["scope"]), 0) + 1

@@ -200,6 +200,15 @@ def damp(score, ntok):
     return score * min(1.0, math.pow(DAMP_PIVOT / float(ntok), DAMP_ALPHA))
 
 
+MAX_WARN = 2                   # correction pointers per served card
+WARN_CHARS = 110               # of the corrector's first line
+
+
+def warn_line(cor):
+    """The reverse edge, one line: who corrects the card just served."""
+    return f"  ! CORRECTED BY {cor['id']}: {cor['first'][:WARN_CHARS]}"
+
+
 def card_line(c, score=None, prefix="- "):
     flags = []
     if c["status"] in ("refuted", "challenged", "superseded"):
@@ -211,13 +220,38 @@ def card_line(c, score=None, prefix="- "):
     return f"{prefix}{c['id']}{sc} {flag}{c['first'][:100]}"
 
 
+def correctors_of(c, by_id, rev):
+    """Cards that correct c: the reverse edges (someone's contradicts/supersedes
+    points AT c) plus c's own forward refuted_by. Never raises — a base with one
+    malformed link must degrade to "no correctors", not cost the injection."""
+    out, seen = [], set()
+    try:
+        for cor in ([by_id[k] for k in (c["links"].get("refuted_by") or []) if k in by_id]
+                    + list(rev.get(c["id"], []))):
+            if cor["id"] != c["id"] and cor["id"] not in seen:
+                seen.add(cor["id"])
+                out.append(cor)
+    except Exception:
+        return []
+    return out
+
+
 def build_injection(cands, cards, injected, t, skips):
     """At most MAX_PRIMARY fresh cards, each optionally preceded by the principle
     it supports and followed by whatever corrects it. A refuted card is never
-    served alone: the correction is the useful half."""
+    served alone: the correction is the useful half.
+
+    Every served card carries its correctors, WHATEVER ITS STATUS. This used to
+    happen only for cards already marked challenged/refuted/superseded — but a
+    correction arrives before anyone re-statuses the old card, and `active` is
+    exactly the state in which a stale card is believed. In the source deployment
+    that gap cost four days: a card corrected in August kept its `active` July
+    predecessors, and they were served to the operator as the current state of
+    the machine, correctly, by the rules as they then stood."""
     by_id = {c["id"]: c for c in cards}
     rev = ks.reverse_correctors(cards)
     lines, used, primaries = [], [], 0
+    warn_chars = 0
 
     def fresh(cid):
         ts = injected.get(cid)
@@ -244,19 +278,40 @@ def build_injection(cands, cards, injected, t, skips):
         lines.append(card_line(c, score))
         used.append(c["id"])
         primaries += 1
+        correctors = correctors_of(c, by_id, rev)
         if c["status"] in ("challenged", "refuted", "superseded"):
-            correctors = [by_id[k] for k in c["links"]["refuted_by"] if k in by_id]
-            correctors += rev.get(c["id"], [])
+            # unchanged: the refuter is served as a full card line and marked
+            # injected, because a refuted card without it is worse than nothing.
             for cor in correctors[:1]:
                 if cor["id"] not in used:
                     lines.append(card_line(cor, prefix="  -> corrected by: "))
                     used.append(cor["id"])
+                    correctors = [x for x in correctors if x["id"] != cor["id"]]
+        # An ACTIVE card that something corrects gets a POINTER, not a card: it
+        # consumes no primary slot and is not marked injected, so it can repeat
+        # as often as its subject comes up and the card behind it can still be
+        # served in full later.
+        try:
+            for cor in correctors[:MAX_WARN]:
+                if cor["id"] in used:
+                    continue
+                line = warn_line(cor)
+                lines.append(line)
+                warn_chars += len(line) + 1
+        except Exception:
+            pass        # a pointer that cannot be built is dropped, never raised
     if not lines:
         return None, []
     text = ("KHMS (auto-recall — cards that may bear on what is happening):\n"
             + "\n".join(lines)
             + "\nIf one is relevant, open it whole (memory/know/<id>.md) and follow its links.")
-    return text[:CHAR_CAP], used
+    # BUDGET: the correction pointers are EXEMPT from CHAR_CAP — the cap on
+    # everything else is unchanged (cap plus exactly the characters the pointers
+    # added). They are not extra retrieval: they correct content that is being
+    # injected anyway, and a truncated correction is the failure this exists to
+    # prevent. Bounded by construction: at most MAX_WARN per card, WARN_CHARS
+    # each, i.e. ~280 characters against a 900-character cap.
+    return text[:CHAR_CAP + warn_chars], used
 
 
 # ------------------------------------------------------------------- events

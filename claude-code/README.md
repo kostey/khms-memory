@@ -47,6 +47,13 @@ message learns to ignore all of them. The parameters live at the top of `khms_ho
   an error string is a much sharper query than a sentence.
 - **At most two primary cards**, plus the principle one of them supports and whatever corrects
   it, capped at 900 characters total.
+- **Correction pointers are exempt from that cap** (at most two per card, 110 characters each).
+  A served card always arrives with a one-line `! CORRECTED BY K-xxxxx: …` for every card whose
+  `contradicts` / `supersedes` / `refuted_by` points at it, *whatever its status* — the corrected
+  card is usually still `active`, because a correction lands before anyone re-statuses anything.
+  They are exempt because they are not extra retrieval: they correct content that is being
+  injected anyway, and a truncated correction is precisely the failure the pointer exists to
+  prevent.
 - **Rate cap: 3 injections per 10 minutes**, plus **one bypass ride** per window for a top hit
   that clears the operator-message bar. Without the bypass the cap spends the window
   first-come — and drops the best question of the hour because three routine ones preceded it.

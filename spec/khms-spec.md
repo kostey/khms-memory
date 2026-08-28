@@ -155,6 +155,18 @@ These five are the only link types. A relation that is not one of them belongs i
 a human reads it — not in a sixth key that no tool will ever read. Links must live inside the
 `links:` mapping; a top-level `supports:` is silently ignored by every consumer.
 
+**A correction MUST carry its edge.** A card whose body says it corrects something (`CORRECTED`,
+`SUPERSEDES`, "contrary to", "was wrong", "no longer true", and the operator language's
+equivalents) and names nothing in `contradicts` / `supersedes` / `refuted_by` is refused at
+approval by `tools/khms_lint.py` — before any id is allocated — with a message naming the missing
+edge. Retrieval travels by edges: a correction written only as prose inside the correcting card
+cannot be reached from the card it corrects, which therefore goes on being served alone, as
+current. If the corrected claim was genuinely never carded, the body says so in one line —
+`NO-CORRECTION-TARGET: <reason>` — which is a statement in an immutable card, not a flag in a
+script. The other half of the same rule lives in retrieval (§6): every served card is served with
+whatever corrects it, **whatever its status**, because a correction always arrives before anyone
+re-statuses the old card.
+
 ### 4.11 Operator-language line (optional)
 When the operator's working language is not the language of the base, end every card body with
 one line in the operator's language summarising the card, and quote the operator's own words
@@ -201,7 +213,9 @@ Retrieval has two layers with different failure modes:
 
 - **The floor** — automatic injection by harness hooks, on a budget. It fires without anyone
   remembering it. It is *bounded* (thresholds, rate cap, per-card dedup), so "it would have
-  popped up by itself" is not a guarantee of anything.
+  popped up by itself" is not a guarantee of anything. One thing it is *not* allowed to drop:
+  a card is never served without a one-line pointer to whatever corrects it (§4.10), whatever
+  either card's status, and those pointers do not compete with the character budget.
 - **The ceiling** — explicit `recall.sh` before root-causing, before stating a hypothesis and
   before making a proposal, and `precheck.sh` before risky actions. The hook cannot fire on
   what the agent has not yet said, which is exactly what a proposal is.

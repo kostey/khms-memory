@@ -193,8 +193,11 @@ expensive attention is spent only where it is needed.
 
    `approve_inbox.py` allocates the sequential IDs from `tools/.next_id`, rewrites temp
    cross-references, and writes the cards. It exits non-zero if any card failed to parse —
-   treat a partial import as a failure, never as a finished one. Finish with a two-sentence
-   report to your operator in their language.
+   treat a partial import as a failure, never as a finished one. It also **refuses the whole
+   run, before allocating any ID, when a card says it corrects something without naming what**
+   (`tools/khms_lint.py`): add the `contradicts` / `supersedes` / `refuted_by` edge it asks for
+   and re-run. A correction only prose can see is one your retrieval will never reach. Finish
+   with a two-sentence report to your operator in their language.
 5. **Weekly synthesis** (`tools/weekly_synthesis.sh`, cron Sunday ~04:00) + weekly review.
    Proposes `principle` cards where three or more observations share a shape, puts contradicting
    patterns side by side with the cheapest experiment that would discriminate them, and ranks

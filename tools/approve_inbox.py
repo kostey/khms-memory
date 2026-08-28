@@ -19,6 +19,7 @@ import sys
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import khms_lint  # noqa: E402
 import khms_paths as P  # noqa: E402
 
 CARD_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*?)(?=\n---\s*\n|\Z)", re.S | re.M)
@@ -85,6 +86,22 @@ def main():
             print(f"   {cid}: {err}")
         print("   Fix them and re-run with ONLY those cards — the ones below are "
               "already written.")
+
+    # A correction with no edge is a correction nothing can reach: retrieval
+    # follows links, so a card that says CORRECTED but names nothing leaves the
+    # card it corrects being served alone, as current, for as long as anybody
+    # keeps asking about it. Refuse BEFORE any id is allocated, so a refused run
+    # leaves know/ and the counter exactly as they were and the reviewer re-runs
+    # the whole file once the edge is in.
+    known = khms_lint.known_card_ids(P.KNOW) | {str(m["id"]) for m, _ in all_cards}
+    problems = khms_lint.lint_batch(
+        [(str(m["id"]), m, b) for m, b in all_cards], known)
+    if problems:
+        print(f"\n!! REFUSED: {len(problems)} card(s) claim to correct something "
+              f"without saying what. NOTHING was written, no ids were allocated.")
+        for p in problems:
+            print(f"   {p}")
+        sys.exit(1)
 
     with open(P.COUNTER) as f:
         cur = int(f.read().strip())

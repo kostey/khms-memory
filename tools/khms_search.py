@@ -110,11 +110,15 @@ def reverse_correctors(cards):
     without whatever corrected it."""
     rev = {}
     for c in cards:
-        for tgt in (c["links"]["contradicts"] or []):
+        links = c.get("links") or {}
+        # .get, not [], because this map is now consulted for EVERY served card,
+        # on the live hook path: one card with a link block this parser did not
+        # fill must not cost the whole injection.
+        for tgt in (links.get("contradicts") or []):
             rev.setdefault(tgt, []).append(c)
-        sup = c["links"]["supersedes"]
-        if sup:
-            rev.setdefault(sup, []).append(c)
+        sup = links.get("supersedes")
+        for tgt in (sup if isinstance(sup, list) else [sup] if sup else []):
+            rev.setdefault(tgt, []).append(c)
     return rev
 
 

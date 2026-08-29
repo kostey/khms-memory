@@ -111,6 +111,9 @@ REPORT_DIRECTIVE = (
     "A process id, an exit code, a value in a config file or a subagent's report are "
     "signals about another layer, not verification of the state itself. If you cannot "
     "name the command, write \"unverified\" — that is a valid answer; a silent claim is not.\n"
+    "A telemetry/diagnostics VALUE counts as verification only together with its "
+    "freshness evidence (stale flag, sample age, publisher liveness): a perfectly "
+    "constant physical reading is a freeze suspect before it is a stability claim.\n"
 )
 
 

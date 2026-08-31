@@ -27,7 +27,7 @@ the only one in the whole system.
 | Event | Matcher | What the hook does |
 |---|---|---|
 | `SessionStart` | — | Reports an unreviewed inbox: "review it before other work". Silent when the inbox is clean. |
-| `UserPromptSubmit` | — | Scores the operator's message against the card base; injects up to two cards plus their correctors, and appends the reply directive (`recall:` / `verified:` lines). |
+| `UserPromptSubmit` | — | Scores the operator's message against the card base; injects up to two cards plus their correctors, and appends the reply directive (`recall:` / `verified:` / `if I were wrong:` lines). |
 | `PreToolUse` | `Bash` | Runs `precheck.sh` automatically for a named risky-command class (`rm -rf`, `rsync --delete`, `systemctl`, `git push --force`, `kubectl delete`, `terraform apply`, `DROP TABLE`, …). Otherwise scores the command text. |
 | `PreToolUse` | `Edit\|Write` | Scores the file path and the edited text — the moment before a change is when a gotcha card is worth most. |
 | `PostToolUse` | `Bash` | Scores the command plus up to three error lines from its output. |

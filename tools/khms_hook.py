@@ -114,6 +114,18 @@ REPORT_DIRECTIVE = (
     "A telemetry/diagnostics VALUE counts as verification only together with its "
     "freshness evidence (stale flag, sample age, publisher liveness): a perfectly "
     "constant physical reading is a freeze suspect before it is a stability claim.\n"
+    "\nAND THE SECOND HALF OF THAT SAME DUTY, one more line: "
+    "`if I were wrong: <how that output would have looked DIFFERENT>`\n"
+    "The `verified:` line asks only whether something was run, never whether its output "
+    "supports the claim — and a check that passes whether or not the thing it guards is "
+    "healthy is not a check. Four traps it is there to catch: an empty search result is "
+    "NOT evidence of absence until that same pattern has shown it can find what it is "
+    "looking for; a metric of the form \"count over the last N seconds\" must not be read "
+    "until N seconds after an intervention, or the window still covers the period before "
+    "the fix; `ps -o pcpu` is an average over the process's whole LIFETIME, not its load "
+    "right now (`top -bn2` measures that); and when COMPARING TWO MACHINES you must name "
+    "the ONE instrument used on both, because two instruments measure two quantities and "
+    "the difference between them means nothing.\n"
 )
 
 

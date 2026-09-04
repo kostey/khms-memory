@@ -160,5 +160,134 @@ class GateWritesWhatApproveRefusesToRead(unittest.TestCase):
                       open(os.path.join(know, cards[0]), encoding="utf-8").read())
 
 
+class LinksLine(unittest.TestCase):
+    """`**LINKS:** supports=[K-x]` in the body must reach `links:` in the card.
+
+    The consolidate prompt calls this line "the ONLY channel by which a link you
+    spotted reaches the knowledge graph". If nothing folds it into the frontmatter
+    the sentence is false and every edge a stage found is dropped in silence — no
+    error, no warning, a graph that simply never grows an edge. RED-first record:
+    against the pre-change approve_inbox.py the first three tests failed.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="linksline-")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.know = os.path.join(self.root, "memory", "know")
+        os.makedirs(self.know)
+        os.makedirs(os.path.join(self.root, "tools"))
+        open(os.path.join(self.root, "tools", ".next_id"), "w").write("90500\n")
+        self.inbox = os.path.join(self.root, "inbox.md")
+
+    def approve(self, line):
+        open(self.inbox, "w", encoding="utf-8").write(
+            "## Cards\n\n" + CARD % ("C1", "with links", "C1",
+                                      "%s\nthe gateway reboots at 03:00 daily." % line,
+                                      "the gateway reboots at 03:00 daily."))
+        env = dict(os.environ, KHMS_ROOT=self.root)
+        r = subprocess.run([sys.executable, APPROVE, self.inbox],
+                           capture_output=True, text=True, env=env)
+        written = [f for f in os.listdir(self.know)]
+        card = open(os.path.join(self.know, written[0]), encoding="utf-8").read() \
+            if written else ""
+        return r, card
+
+    def test_supports_reaches_the_frontmatter(self):
+        _r, card = self.approve("**LINKS:** supports=[K-90001]")
+        self.assertIn("supports:", card)
+        self.assertIn("K-90001", card.split("---")[1])
+
+    def test_several_keys_on_one_line(self):
+        _r, card = self.approve("**LINKS:** supports=[K-90001] contradicts=[K-90002]")
+        front = card.split("---")[1]
+        self.assertIn("K-90001", front)
+        self.assertIn("K-90002", front)
+
+    def test_the_line_is_stripped_from_the_body(self):
+        _r, card = self.approve("**LINKS:** supports=[K-90001]")
+        self.assertNotIn("**LINKS:**", card)
+
+    def test_an_unknown_key_is_dropped_loudly(self):
+        r, card = self.approve("**LINKS:** related=[K-90001]")
+        self.assertIn("dropped 'related='", r.stdout)
+        self.assertNotIn("K-90001", card.split("---")[1])
+
+    def test_a_card_without_the_line_is_unaffected(self):
+        r, card = self.approve("no links here")
+        self.assertNotIn("LINKS line:", r.stdout)
+        self.assertIn("supports: []", card)
+
+
+class SupersedeMarking(unittest.TestCase):
+    """The other half of a supersedes edge, written on the TARGET.
+
+    An edge on the new card alone leaves the old one `status: active`, and the
+    injection layer then serves it as the current state of the world. RED-first
+    record: against the pre-change approve_inbox.py the first two tests failed —
+    the target kept `status: active` and had no `superseded_by`.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="supersede-")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.know = os.path.join(self.root, "memory", "know")
+        os.makedirs(self.know)
+        os.makedirs(os.path.join(self.root, "tools"))
+        open(os.path.join(self.root, "tools", ".next_id"), "w").write("90500\n")
+        self.inbox = os.path.join(self.root, "inbox.md")
+
+    def target(self, cid, status="active"):
+        open(os.path.join(self.know, cid + ".md"), "w", encoding="utf-8").write(
+            "---\nid: %s\ntype: fact\nlevel: observation\nstatus: %s\n"
+            "tags: [testing]\nlinks:\n  derived_from: []\n  supports: []\n"
+            "  contradicts: []\n  supersedes: null\n  refuted_by: []\n---\n"
+            "the mast is four metres tall.\n" % (cid, status))
+
+    def approve(self, link_line):
+        open(self.inbox, "w", encoding="utf-8").write(
+            "## Cards\n\n" + CARD % ("C1", "remeasured", "C1",
+                                      "%s\nthe mast is 4.20 metres tall." % link_line,
+                                      "the mast is 4.20 metres tall."))
+        env = dict(os.environ, KHMS_ROOT=self.root)
+        return subprocess.run([sys.executable, APPROVE, self.inbox],
+                              capture_output=True, text=True, env=env)
+
+    def read(self, cid):
+        return open(os.path.join(self.know, cid + ".md"), encoding="utf-8").read()
+
+    def test_an_active_target_is_marked_and_pointed_back(self):
+        self.target("K-90001")
+        r = self.approve("**LINKS:** supersedes=[K-90001]")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        body = self.read("K-90001")
+        self.assertIn("status: superseded", body)
+        self.assertRegex(body, r"superseded_by: K-905\d\d")
+        self.assertIn("K-90001: status -> superseded", r.stdout)
+
+    def test_the_target_keeps_its_body(self):
+        self.target("K-90001")
+        self.approve("**LINKS:** supersedes=[K-90001]")
+        self.assertIn("four metres tall", self.read("K-90001"))
+
+    def test_a_non_active_target_is_left_alone_and_reported(self):
+        self.target("K-90001", status="challenged")
+        r = self.approve("**LINKS:** supersedes=[K-90001]")
+        self.assertIn("status: challenged", self.read("K-90001"))
+        self.assertIn("not active", r.stdout)
+
+    def test_a_missing_target_is_reported_not_crashed(self):
+        r = self.approve("**LINKS:** supersedes=[K-90404]")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("no such card", r.stdout)
+
+    def test_supports_changes_no_status(self):
+        # positive control: the narrowness is the point, not an oversight
+        self.target("K-90001")
+        r = self.approve("**LINKS:** supports=[K-90001]")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("status: active", self.read("K-90001"))
+        self.assertNotIn("superseded_by", self.read("K-90001"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

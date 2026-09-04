@@ -32,6 +32,44 @@ CARD_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*?)(?=\n---\s*\n|\Z)", re.S | r
 # gate rejected, and the gate would be worse than nothing.
 TRAILER_RE = re.compile(r"^## +(DEFERRED|DROPPED)\b.*$", re.M | re.I)
 
+# THE `**LINKS:**` BODY LINE IS A REAL CHANNEL, and it has to be parsed here or the
+# prompt that asks for it is lying. The consolidate stage writes links as one line in
+# the body — it cannot edit frontmatter reliably across a whole file — and unless this
+# stage folds that line into `links:`, every edge a stage spotted is dropped silently:
+# no error, no warning, just a knowledge graph that never grows an edge. Only the five
+# link types exist; anything else on the line (a plausible-looking `related=`) is
+# reported and dropped, because inventing a sixth link type here would put edges into
+# cards that nothing else can read.
+LINKS_LINE_RE = re.compile(r"^\s*\*\*LINKS:\*\*\s*(.+?)\s*$", re.M)
+LINK_KV_RE = re.compile(r"(\w+)\s*=\s*\[([^\]]*)\]")
+LINK_KEYS = ("derived_from", "supports", "contradicts", "refuted_by", "supersedes")
+
+
+def fold_links_line(meta, body, unknown=None):
+    """-> body without the LINKS line, with its edges merged into meta['links']."""
+    m = LINKS_LINE_RE.search(body)
+    if not m:
+        return body
+    links = meta.get("links") or {}
+    if not isinstance(links, dict):
+        links = {}
+    for key, vals in LINK_KV_RE.findall(m.group(1)):
+        ids = [v.strip() for v in vals.split(",") if v.strip()]
+        if key not in LINK_KEYS:
+            if unknown is not None:
+                unknown.append((str(meta.get("id", "?")), key))
+            continue
+        if key == "supersedes":
+            links["supersedes"] = ids[0] if ids else links.get("supersedes")
+            continue
+        cur = list(links.get(key) or [])
+        for v in ids:
+            if v not in cur:
+                cur.append(v)
+        links[key] = cur
+    meta["links"] = links
+    return (body[:m.start()] + body[m.end():]).strip()
+
 
 def cut_trailers(text):
     """-> (text above the first withheld section, heading of that section or None)."""
@@ -39,10 +77,12 @@ def cut_trailers(text):
     return (text[:m.start()], m.group(0).strip()) if m else (text, None)
 
 
-def parse_cards(text, skipped=None):
+def parse_cards(text, skipped=None, unknown_links=None):
     cards = []
     if skipped is None:
         skipped = []
+    if unknown_links is None:
+        unknown_links = []
 
     def try_card(front, body):
         try:
@@ -55,6 +95,7 @@ def parse_cards(text, skipped=None):
         if isinstance(meta, dict) and "id" in meta and "type" in meta:
             body = re.split(r"\n## (?:STATS|NEW-TAGS)\b", body)[0].strip()
             body = re.sub(r"\n\*\(.*?\)\*\s*$", "", body, flags=re.S).strip()
+            body = fold_links_line(meta, body, unknown_links)
             cards.append((meta, body))
 
     def _take_fenced(m):
@@ -76,6 +117,79 @@ def parse_cards(text, skipped=None):
     return cards
 
 
+FRONT_ORDER = ["id", "type", "level", "status", "tags", "scope", "evidence",
+               "source", "date", "links"]
+
+
+def dump_card(meta, body):
+    """One card file, with a stable and readable key order. Shared by the writer
+    below and by mark_superseded, so a card rewritten by the second one comes out
+    in the same shape as a card written by the first."""
+    front = {k: meta[k] for k in FRONT_ORDER if k in meta}
+    for k, v in meta.items():
+        if k not in front and k != "body":
+            front[k] = v
+    fm = yaml.safe_dump(front, sort_keys=False, allow_unicode=True,
+                        default_flow_style=None, width=1000).strip()
+    return f"---\n{fm}\n---\n{body.strip()}\n"
+
+
+def mark_superseded(edges):
+    """Close the OTHER half of a `supersedes` edge, on the target card.
+
+    An edge written on the new card alone leaves the old one `status: active`, so
+    retrieval keeps serving it as current — and the injection layer, which cannot
+    read intentions, serves it as the state of the world. Measured in the reference
+    deployment: cards corrected in August kept their active July predecessors and
+    were quoted back to the operator as current, correctly, by the rules as they
+    then stood. The review had been closing this by hand, one card at a time, after
+    approve_inbox.py had already run. This is that hand edit, done by the tool that
+    already knows both ids.
+
+    Deliberately narrow: only `supersedes`, only a target that exists in know/, only
+    one that is still `active`. `supports` and `contradicts` change no status here —
+    inventing a status policy is not this script's job, and a tool that silently
+    re-statuses cards on a link it guessed at is worse than the hand edit.
+    """
+    changed, notes = 0, []
+    for new_id, targets in edges:
+        for tgt in targets:
+            path = os.path.join(P.KNOW, f"{tgt}.md")
+            if not os.path.exists(path):
+                notes.append(f"   {new_id} supersedes {tgt}: no such card in know/ "
+                             f"— target NOT marked")
+                continue
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+            m = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", text, re.S)
+            if not m:
+                notes.append(f"   {tgt}: unparseable card — NOT marked")
+                continue
+            try:
+                meta = yaml.safe_load(m.group(1)) or {}
+            except yaml.YAMLError as e:
+                notes.append(f"   {tgt}: bad yaml ({str(e)[:60]}) — NOT marked")
+                continue
+            status = str(meta.get("status", "active"))
+            if status != "active":
+                notes.append(f"   {tgt}: status is '{status}', not active — left as "
+                             f"it is; the review decides")
+                continue
+            meta["status"] = "superseded"
+            links = meta.get("links") or {}
+            if not isinstance(links, dict):
+                links = {}
+            links["superseded_by"] = new_id
+            meta["links"] = links
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(dump_card(meta, m.group(2)))
+            os.replace(tmp, path)
+            changed += 1
+            notes.append(f"   {tgt}: status -> superseded, superseded_by {new_id}")
+    return changed, notes
+
+
 def main():
     dry = "--dry-run" in sys.argv
     files = [a for a in sys.argv[1:] if not a.startswith("--")]
@@ -83,18 +197,21 @@ def main():
         print(__doc__)
         sys.exit(2)
     all_cards, skipped = [], []
-    withheld = []
+    withheld, unknown_links = [], []
     for f in files:
         with open(f, encoding="utf-8") as fh:
             head, trailer = cut_trailers(fh.read())
         if trailer:
             n = len(parse_cards(open(f, encoding="utf-8").read())) - len(parse_cards(head))
             withheld.append((f, trailer, n))
-        all_cards += parse_cards(head, skipped)
+        all_cards += parse_cards(head, skipped, unknown_links)
     for f, trailer, n in withheld:
         print(f"withheld: {n} candidate(s) under '{trailer}' in {f} — they were moved "
               f"there by the relation gate, not deleted. To approve one, move its block "
               f"back under '## Cards' first.")
+    for cid, key in unknown_links:
+        print(f"LINKS line: dropped '{key}=' on {cid} — the only link types are "
+              f"{', '.join(LINK_KEYS)}. Say the rest in prose, where a human reads it.")
     if not all_cards:
         print("no cards found")
         sys.exit(1)
@@ -140,6 +257,7 @@ def main():
             return None
         return mapping.get(str(v), str(v))
 
+    supersede_edges = []
     for meta, body in all_cards:
         old = str(meta["id"])
         meta["id"] = mapping[old]
@@ -160,15 +278,12 @@ def main():
         links["supersedes"] = remap(links.get("supersedes") or stray_ss)
         meta["links"] = links
 
-        order = ["id", "type", "level", "status", "tags", "scope", "evidence",
-                 "source", "date", "links"]
-        front = {k: meta[k] for k in order if k in meta}
-        for k, v in meta.items():
-            if k not in front and k != "body":
-                front[k] = v
-        fm = yaml.safe_dump(front, sort_keys=False, allow_unicode=True,
-                            default_flow_style=None, width=1000).strip()
-        out = f"---\n{fm}\n---\n{body}\n"
+        out = dump_card(meta, body)
+        ss = links["supersedes"]
+        targets = [str(t) for t in (ss if isinstance(ss, list) else [ss])
+                   if t and str(t).startswith("K-")]
+        if targets:
+            supersede_edges.append((meta["id"], targets))
         path = os.path.join(P.KNOW, f"{meta['id']}.md")
         if dry:
             print(f"DRY {old} -> {meta['id']}")
@@ -181,6 +296,11 @@ def main():
     if not dry:
         with open(P.COUNTER, "w") as f:
             f.write(str(cur) + "\n")
+        n_marked, notes = mark_superseded(supersede_edges)
+        if notes:
+            print(f"\nsupersedes edges: {n_marked} target card(s) marked superseded")
+            for n in notes:
+                print(n)
         os.makedirs(P.STAGING, exist_ok=True)
         with open(os.path.join(P.STAGING, "last-mapping.txt"), "a", encoding="utf-8") as mf:
             for o, n in mapping.items():

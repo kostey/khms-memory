@@ -267,6 +267,12 @@ in your way: `touch "$KHMS_ROOT/tools/.hooks-off"` (or `KHMS_HOOKS_OFF=1`).
 
 ## Step 8 — Calibrate, and keep the numbers out of the rules
 
+Keep a frozen golden set of the misses that actually happened — the query as it was typed and
+the card that should have come back — and score it with `tools/eval/run_eval.py --prod`, which
+runs the same path `recall.sh` does. Rows are gated (a regression fails the run) or open debt
+(counted and named, not fatal); the shipped rows score against `examples/`, so you can see the
+harness work before you have a base of your own.
+
 Start by measuring what the automatic recall is actually worth to you —
 [docs/measuring-injection.md](docs/measuring-injection.md) has the tools
 (`inject_cited.py`, `khms_debt.py`), the experiment file that switches injection off per event,

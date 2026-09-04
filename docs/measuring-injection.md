@@ -88,3 +88,58 @@ delete something, and its value does not depend on citation counts.
 
 **Before you copy any of this: those numbers are one deployment's, on a base of ~2400 cards,
 with one operator.** The method transfers. The conclusion does not.
+
+## Finding: the slot budget, not the switch — a worked example of blaming the wrong thing
+
+Halfway through the week without operator-prompt injection, the operator hit a problem whose
+answer had been in the base for weeks: one card, one line, written after the same problem two
+months earlier. An hour and two agents went into re-deriving it. The obvious suspect was the
+experiment — injection was off, so of course the card did not arrive.
+
+It was not the experiment. The prompt was replayed through the live hook with the experiment
+config pointed at a nonexistent file (`KHMS_EXPERIMENT=/nonexistent`), state and logs redirected
+to a scratch directory, and the pre-experiment policy produced this:
+
+```
+… | UserPromptSubmit | q=<the operator's sentence> | nhits=50 | top=K-NNNNN:17.8
+  | INJECT [K-NNNNN,K-NNNNN] chars=375
+    skipped=K-NNNNN:threshold 17.8<18,K-NNNNN:slots-full,…
+    mode=hybrid+rescue
+```
+
+The wanted card is in that line — as `slots-full`. The dense channel HAD it, the two-slot budget
+had no room for it, and the pre-experiment hook would not have surfaced it either. Three things
+follow, and all three are the reason `.inject.log` records its silences:
+
+1. **The experiment must not be credited with this miss** at the review date. Without the replay
+   it would have been, and the wrong parameter would have been changed.
+2. **A skip reason is worth more than a hit.** `slots-full` distinguishes "retrieval never found
+   it" from "retrieval found it and the budget dropped it" — different defects with different
+   fixes, indistinguishable from the outside.
+3. **The narrow lever did not fix its own motivating case.** The obvious response — reserve a
+   slot for the dense channel's best card (`DENSE_RESERVED_SLOT` in the hook, default off) — was
+   built and measured: on the record it changes about one in seven operator-prompt decisions,
+   always by replacing the second card rather than adding one, and *on this incident it does
+   nothing at all*, because the dense channel also ranked the wanted card third, 0.017 of a
+   cosine behind its top hit. What surfaced the card was widening the budget (`MAX_PRIMARY = 3`).
+   A lever that is inert on the example that motivated it is a lever chosen from a story rather
+   than from a measurement.
+
+Note also what the replay had to be careful about: an earlier reading of the same lever ("give
+the slot to the dense channel's rank-1 card") was implemented first and measured at 1 changed
+decision in two days instead of 6 — because rank 1 was usually already among the picks. The
+shipped rule is "the dense channel's best hit THAT THE LEXICAL PICKS DO NOT ALREADY CONTAIN".
+Two readings of one sentence, one of them inert, and only the measurement told them apart.
+
+## Keep a golden set of your real misses
+
+`tools/eval/run_eval.py --prod` scores a frozen set of (query, expected card) pairs through the
+exact path `recall.sh` runs, and prints one line. Every row should be a MISS THAT ACTUALLY
+HAPPENED — the query as it was typed, and the id of the card that should have come back. That
+file becomes the record of every hole retrieval has fallen into, and the only thing that can
+tell an improvement from a story.
+
+Rows carry `gate: true` (a regression here fails the run) or `gate: false` (open debt: counted,
+named, not fatal). Keep that distinction honest. A case nothing currently fixes must not be
+gated, because a permanently red gate is a gate nobody reads — and a case something was supposed
+to fix must be gated the day it is claimed fixed.

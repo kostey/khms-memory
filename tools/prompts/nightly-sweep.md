@@ -48,6 +48,17 @@ Whitespace and quote style are normalised for you; wording is not. And `src=` na
 ACTUALLY read the text from: mislabelling a digest quote as `journal` costs downstream time to
 run down, every time.
 
+**AN OMISSION INSIDE A QUOTE MUST SAY IT IS ONE.** Verbatim means verbatim, so where you drop a
+span — a clause, a numbered marker, a parenthesis — write `...` in its place; an editorial
+insertion of your own goes in square brackets and stays to a word or two. `verify_quotes.py`
+grades each quote as EXACT, WRAPPED (the source only re-typeset it), ELIDED (a MARKED `...`, `…`
+or `[...]` whose every remaining segment is present, in order) or ABSENT, and only ABSENT is
+fatal. An UNMARKED splice is not an elided quote and is not a small tidy-up: the checker sees a
+sentence the source does not contain and calls it ABSENT, which is the right answer, because a
+spliced quote asserts an adjacency nobody wrote. When a passage cannot be given verbatim with
+marked elisions, do not quote it at all — say it in the card body in your own words and leave it
+out of the `**QUOTES:**` block, where only text you copied belongs.
+
 Two hard rules:
 
 1. **A card with no QUOTES block is discarded**, including things you are certain about.

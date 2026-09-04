@@ -39,6 +39,17 @@ SWEEP_TIMEOUT="${SWEEP_TIMEOUT:-90m}"
 CONSOLIDATE_TIMEOUT="${CONSOLIDATE_TIMEOUT:-100m}"
 DRYRUN="${NIGHTLY_DRYRUN:-0}"
 
+# MERGE PRESSURE. A pipeline that only produces will hold seventeen cards about one
+# measured parameter within a year, and no edge between any of them. Two mechanical
+# stages close that, at zero model cost:
+#   nearest_cards.py    — before the model is asked what a candidate replaces, it is
+#                         TOLD which active cards are nearest.
+#   verify_relations.py — after it answers, the answer is CHECKED, and the cap below
+#                         is enforced regardless of what the model emitted.
+# The cap is a REVIEW-CAPACITY number, not a knowledge one: the overflow goes to a
+# `## DEFERRED` section of the same file, whole, and nothing is deleted.
+NIGHTLY_MAX_CARDS="${NIGHTLY_MAX_CARDS:-20}"
+
 STAGING="${NIGHTLY_STAGING:-$ROOT/memory/inbox/.staging}"
 DATE="${NIGHTLY_DATE:-$(date +%F)}"
 LOG="$ROOT/tools/nightly.log"
@@ -133,6 +144,7 @@ CONS_INPUTS="INPUTS:
 - $GITLOG_INPUT
 - today's journal (append the day summary here, nothing else): $JOURNAL
 - quote-verification report: $QREPORT
+MAX CARDS: $NIGHTLY_MAX_CARDS
 OUTPUT FILE: $OUT"
 
 if [ "$DRYRUN" = "1" ]; then
@@ -142,6 +154,11 @@ if [ "$DRYRUN" = "1" ]; then
   done
   printf '\n--- SWEEP INPUTS ---\n%s\n\n--- CONSOLIDATE INPUTS ---\n%s\n' \
     "$SWEEP_INPUTS" "$CONS_INPUTS"
+  echo "  === nearest ===            python3 $ROOT/tools/nearest_cards.py $SWEEP"
+  echo "  === verify_relations ===   python3 $ROOT/tools/nearest_cards.py $OUT --only-missing"
+  echo "                             python3 $ROOT/tools/verify_relations.py $OUT --max $NIGHTLY_MAX_CARDS"
+  echo "  cap handed to the model as 'MAX CARDS: $NIGHTLY_MAX_CARDS' (see the block above)"
+  python3 "$ROOT/tools/verify_relations.py" --self-test || true
   exit 0
 fi
 
@@ -202,6 +219,20 @@ python3 "$ROOT/tools/verify_quotes.py" "$SWEEP" \
   > "$QREPORT" 2>&1 || true
 echo "$(date -Is) quotecheck: $(tail -1 "$QREPORT")" >> "$LOG"
 
+# ------------------------------------------------- 2c. nearest existing cards
+# The mechanical half of merge pressure, zero model tokens. Every candidate is
+# annotated with the ACTIVE cards the retrieval layer ranks closest to it, so the
+# consolidate stage is asked "what does this replace?" with the answer's candidates
+# already in front of it — instead of being asked to link against whatever it
+# happened to read.
+# NON-FATAL, deliberately: a ranking bug must not cost the night its cards. Without
+# NEAREST lines the consolidate stage still runs; only the `RELATION: new` check
+# downstream loses its evidence, and step 4a then refuses to run the gate rather than
+# dropping candidates for the tool's own reason.
+echo "$(date -Is) === nearest === annotating $SWEEP" >> "$LOG"
+python3 "$ROOT/tools/nearest_cards.py" "$SWEEP" >> "$LOG" 2>&1 \
+  || echo "$(date -Is) === nearest === FAILED (non-fatal) — consolidate runs without NEAREST lines" >> "$LOG"
+
 # --------------------------------------------------------- 3. consolidate
 # The consolidate stage is handed THE SAME SOURCES the extract stage had. Until
 # it was, its own instruction to check "is this covered by its cited source?" was
@@ -221,6 +252,33 @@ $CONS_INPUTS" --model "$CONS_MODEL" --allowedTools $TOOLS >> "$LOG" 2>&1 || rc=$
 python3 "$ROOT/tools/verify_quotes.py" "$OUT" \
   --source digest="$DIGEST" --source journal="$JSRC" --source gitlog="$GITLOG" \
   > "${OUT%.md}-quotecheck.txt" 2>&1 || true
+
+# ------------------------------------------ 4. merge pressure, ENFORCED
+# Every candidate must name exactly one existing card it supersedes / supports /
+# contradicts, or say in one sentence why its nearest is unrelated. A candidate that
+# does not is MOVED, whole, into `## DROPPED (no valid RELATION)`, and the overflow
+# past $NIGHTLY_MAX_CARDS into `## DEFERRED`. Nothing is deleted, and the approve
+# stage parses cards rather than sections, so neither can become a card by accident.
+#
+# `--only-missing` first: a candidate that carried its sweep NEAREST line through
+# keeps it (that is what `RELATION: new` is judged against); a merged or rewritten
+# candidate gets one computed from its final text.
+#
+# THE GATE IS SKIPPED IF THAT ANNOTATION FAILS, deliberately. A RELATION check with no
+# NEAREST lines would drop every `new` candidate for the TOOL's reason rather than the
+# candidate's — a check failing for reasons unrelated to the thing it guards, pointed
+# the other way.
+RREPORT="$STAGING/nightly-$DATE-relations.txt"
+echo "$(date -Is) === verify_relations === gate over $OUT (max $NIGHTLY_MAX_CARDS)" >> "$LOG"
+if python3 "$ROOT/tools/nearest_cards.py" "$OUT" --only-missing >> "$LOG" 2>&1; then
+  python3 "$ROOT/tools/verify_relations.py" "$OUT" \
+    --max "$NIGHTLY_MAX_CARDS" > "$RREPORT" 2>&1 || true   # a report, not a gate
+  echo "$(date -Is) === verify_relations === $(tail -1 "$RREPORT")" >> "$LOG"
+  grep -E '^!! MASS DROP' "$RREPORT" >> "$LOG" || true
+  grep -E '^[A-Z][0-9]+: (DROP|DEFER|FLAG)' "$RREPORT" >> "$LOG" || true
+else
+  echo "$(date -Is) === verify_relations === SKIPPED — nearest(post) FAILED, and a RELATION gate without NEAREST lines would drop candidates for the tool's own reason" >> "$LOG"
+fi
 
 echo "$RUN_START" > "$STAMP"
 echo "$(date -Is) nightly done -> $OUT" >> "$LOG"

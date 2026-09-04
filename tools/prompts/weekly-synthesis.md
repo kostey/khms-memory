@@ -45,15 +45,45 @@ Cite the log lines. Parameters are configuration; changing one is a proposal lik
 Compare the week's inboxes against the week's journals: MARK anchors that produced no candidate,
 recurring topics with no card, an area of work the base is silent about.
 
+## MERGE PRESSURE — every card you propose names an existing one
+
+`tools/nearest_cards.py` annotates your output afterwards with the ACTIVE cards nearest to
+each proposal, and `tools/verify_relations.py` then requires exactly one line per proposal,
+on its own line in the body, before the `**QUOTES:**` block:
+
+    RELATION: supersedes K-NNNNN BECAUSE <one sentence>
+    RELATION: supports K-NNNNN
+    RELATION: contradicts K-NNNNN
+    RELATION: new — nearest K-NNNNN unrelated because <one sentence>
+
+The id must exist, and a `supersedes` target must still be LIVE — `status: active` or
+`status: challenged`; an edge onto a `superseded` / `refuted` / `condensed` card chains onto
+a dead end. A proposal without exactly one valid RELATION is MOVED, whole, into a
+`## DROPPED (no valid RELATION)` section: nothing is lost, but it does not become a card
+this week.
+
+This stage reasons over the existing base, so it has the least excuse of any stage for
+proposing a card that names nothing. A weekly whose proposals carry no relation is a weekly
+that adds cards to a base whose problem is that it never merges any.
+
+## THE CAP — you have room for MAX CARDS proposals, no more
+
+Your inputs name a maximum (`MAX CARDS:`). Rank by evidence grade — measured > reported >
+inferred — then by how much a proposal changes what the base already says. Everything else
+goes into a `## DEFERRED` section at the end of the file, one line each with a `src=`
+pointer. The cap is enforced by tool afterwards in file order, so an over-long output gets
+the tail of your own ranking deferred by a script that cannot read your reasons.
+
 ## Grounding
 
 Same contract as the nightly stages, and it applies to claims about cards too: every specific is
 backed by a `**QUOTES:**` line, `src=` names one of the inputs you were given, and the text after
 `::` occurs verbatim in it. `src=headers` for the headers digest, `src=inbox` for the week's
-inboxes, `src=K-00042` for a card's own body — a claim about what a card says is verified
+inboxes, `src=K-NNNNN` for a card's own body — a claim about what a card says is verified
 against that card. Misattribution — crediting a rule to the wrong card — is this stage's
 characteristic failure, and it is exactly as checkable as any other quote.
 
 Write incrementally: open the output file once with `Write`, append each finished section with
-`Edit`, never re-emit what is already in the file, never compose proposals in your reply. Final
-message: output path plus counts per section.
+`Edit`, never re-emit what is already in the file, never compose proposals in your reply.
+Output shape: the numbered sections above, then `## DEFERRED` (the over-cap one-liners).
+Final message: output path plus counts per section.

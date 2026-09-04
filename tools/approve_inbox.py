@@ -24,6 +24,20 @@ import khms_paths as P  # noqa: E402
 
 CARD_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*?)(?=\n---\s*\n|\Z)", re.S | re.M)
 
+# WITHHELD SECTIONS. `verify_relations.py` does not delete a candidate it rejects: it
+# MOVES the whole block — yaml fence, body, quotes and all — into `## DEFERRED` or
+# `## DROPPED (no valid RELATION)` at the end of the file, so a human can rescue it by
+# moving it back. That is only true as long as this stage refuses to read those
+# sections; a parser that scans the whole file would approve exactly the candidates the
+# gate rejected, and the gate would be worse than nothing.
+TRAILER_RE = re.compile(r"^## +(DEFERRED|DROPPED)\b.*$", re.M | re.I)
+
+
+def cut_trailers(text):
+    """-> (text above the first withheld section, heading of that section or None)."""
+    m = TRAILER_RE.search(text)
+    return (text[:m.start()], m.group(0).strip()) if m else (text, None)
+
 
 def parse_cards(text, skipped=None):
     cards = []
@@ -69,9 +83,18 @@ def main():
         print(__doc__)
         sys.exit(2)
     all_cards, skipped = [], []
+    withheld = []
     for f in files:
         with open(f, encoding="utf-8") as fh:
-            all_cards += parse_cards(fh.read(), skipped)
+            head, trailer = cut_trailers(fh.read())
+        if trailer:
+            n = len(parse_cards(open(f, encoding="utf-8").read())) - len(parse_cards(head))
+            withheld.append((f, trailer, n))
+        all_cards += parse_cards(head, skipped)
+    for f, trailer, n in withheld:
+        print(f"withheld: {n} candidate(s) under '{trailer}' in {f} — they were moved "
+              f"there by the relation gate, not deleted. To approve one, move its block "
+              f"back under '## Cards' first.")
     if not all_cards:
         print("no cards found")
         sys.exit(1)
@@ -121,7 +144,7 @@ def main():
         old = str(meta["id"])
         meta["id"] = mapping[old]
         links = meta.get("links") or {}
-        # A link written as a TOP-LEVEL key (`supports: [K-00042]` instead of
+        # A link written as a TOP-LEVEL key (`supports: [K-NNNNN]` instead of
         # `links: {supports: [...]}`) is not an error anywhere — it is silently
         # dropped, because every consumer reads links only from meta["links"].
         # Pop whatever arrives that way so no edge reaches know/ loose.

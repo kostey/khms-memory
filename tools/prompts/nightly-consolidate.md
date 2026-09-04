@@ -35,6 +35,65 @@ stage later. And never repair a card by moving its `src=` label to a source that
 contain something similar: that turns a grounding failure into a false provenance, which is
 worse. Report a mislabel only when you have actually located the text in the other source.
 
+## MERGE PRESSURE — the one line every candidate must carry
+
+Each candidate in the sweep file already carries a line written mechanically before you
+were called:
+
+    NEAREST: K-NNNNN (41.2), K-NNNNN (33.8), K-NNNNN (28.1)
+
+Those are the ACTIVE cards the retrieval layer ranks closest to that candidate
+(`tools/nearest_cards.py`, zero model tokens). **Read those cards** — they are files under
+`memory/know/` — before deciding what the candidate is.
+
+**Every candidate you emit MUST carry exactly one RELATION line**, on its own line in the
+body, before the `**QUOTES:**` block:
+
+    RELATION: supersedes K-NNNNN BECAUSE <one sentence>
+    RELATION: supports K-NNNNN
+    RELATION: contradicts K-NNNNN
+    RELATION: new — nearest K-NNNNN unrelated because <one sentence>
+
+The id is normally one of that candidate's NEAREST ids; another existing id is allowed when
+you have actually read it and it fits better. `RELATION: new` is the only shape checked
+against the NEAREST list — you may not declare "nothing in the base is close" about a card
+the retrieval layer never proposed.
+
+**CARRY THE `NEAREST:` LINE THROUGH** into the candidate you emit (when you merge several
+sweep candidates, carry the union of their NEAREST ids). It is the only evidence a
+`RELATION: new` can be judged against.
+
+`tools/verify_relations.py` runs over your output and MOVES every candidate without exactly
+one valid RELATION into a `## DROPPED (no valid RELATION)` section. The knowledge is not
+lost, but it does not become a card that night, and the review has to rescue it by hand. A
+relation named badly costs the same as none at all: the id must exist, and a `supersedes`
+target must still be LIVE — `status: active` OR `status: challenged` (a challenged card is
+one already marked as losing a contradiction, so it is the BEST supersedes target there is;
+a `superseded` / `refuted` / `condensed` one chains onto a dead end — check the target's
+frontmatter).
+
+**TWO CANDIDATES ABOUT THE SAME SUBJECT ARE ONE CANDIDATE.** Merge them, keeping every quote
+from both. This is a distillation pipeline's largest defect, and it is measurable: in the
+reference deployment the base held 17 cards about one measured parameter, 14 about another,
+8 about a third — one quantity, measured repeatedly, written down as new knowledge every
+time — while a contradiction sweep confirmed 75 contradictions in a 250-pair sample against
+8 superseded and 7 refuted edges in the whole base. A base does not need more cards; it
+needs the ones it has to be corrected, replaced and joined up. If a candidate merely
+re-measures something a NEAREST card already states, the correct output is ONE candidate
+that supersedes it — not two cards that disagree quietly for the next six months.
+
+## THE CAP — you have room for MAX CARDS candidates, no more
+
+Your inputs name a maximum (`MAX CARDS:` in the INPUTS block). Rank what you have by
+**evidence grade — measured > reported > inferred**, then by how much it changes what the
+base already says, and emit the best ones up to that number. Everything else goes into a
+`## DEFERRED` section at the end of the file, **one line each: the title plus a `src=`
+pointer**, so tomorrow's review can find it in tonight's sources.
+
+The cap is enforced by tool afterwards regardless of what you emit, in file order, so an
+over-long output does not get you more cards — it gets the tail of your own ranking deferred
+by a script that cannot read your reasons. Rank deliberately.
+
 ## Then
 
 - **Deduplicate** candidates; drop noise. Count the drops by reason.
@@ -45,7 +104,7 @@ worse. Report a mislabel only when you have actually located the text in the oth
 
   Write links as ONE line in the card body, immediately before the `**QUOTES:**` block:
 
-      **LINKS:** supports=[K-00042] derived_from=[C12]
+      **LINKS:** supports=[K-NNNNN] derived_from=[C12]
 
   Omit the line when there are none. This line is the ONLY channel by which a link you spotted
   reaches the knowledge graph: a link written into `## Flagged` prose reaches a human but never
@@ -74,7 +133,8 @@ Carry each surviving card's `**QUOTES:**` block through unchanged: review re-run
 over your file, so a card that loses its grounding on the way through gets caught again.
 
 Output file (path below): `## Cards` (temp labels), then `## Flagged`, then `## Dropped` (counts
-by reason, ungrounded counted separately). Final message: output path and counts only.
+by reason, ungrounded counted separately), then `## DEFERRED` (the over-cap one-liners).
+Final message: output path and counts only.
 
 ## How you WRITE — incrementally, and never twice
 

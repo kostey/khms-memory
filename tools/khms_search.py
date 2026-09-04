@@ -199,13 +199,20 @@ def search(query_raw, cards=None, exclude_meta=False, topn=TOPN):
     return results[:topn], cards
 
 
+def recall_log_path():
+    """The retrieval record. KHMS_RECALL_LOG redirects it, so a test can never
+    write into the live log — and so the retrieval-claim gate, which READS this
+    file from khms_hook.py, has exactly one path to read."""
+    return os.environ.get("KHMS_RECALL_LOG", P.RECALL_LOG)
+
+
 def log_query(query_raw, results, src="cli"):
     """Every query is logged. This is what makes "the base was consulted" an
     auditable fact rather than a claim in a reply."""
     import datetime
     top = f"{results[0][2]['id']}:{results[0][0]:.1f}" if results else "-"
     try:
-        with open(P.RECALL_LOG, "a", encoding="utf-8") as lf:
+        with open(recall_log_path(), "a", encoding="utf-8") as lf:
             lf.write(f"{datetime.datetime.now().astimezone().isoformat(timespec='seconds')}"
                      f" | {query_raw} | nhits={len(results)} | top={top} | src={src}\n")
     except OSError:

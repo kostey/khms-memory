@@ -83,6 +83,15 @@ message learns to ignore all of them. The parameters live at the top of `khms_ho
 - **Dedup TTL: 12 hours per card per session.** Not "once per session": sessions run for days,
   and a card injected on Monday stayed silent on Thursday for the query it was written for.
 - **Query cooldown: 15 minutes** for the same text, so a retry loop does not re-inject.
+- **The dense channel, if you have one.** `khms_recall_hybrid.py` fuses a lexical ranking
+  with an embedding daemon's (reciprocal rank fusion, k=60); `recall.sh` uses it by default and
+  the hook consults it on operator messages only. Two policies sit on top: a RESCUE that adds
+  cards the lexical channel did not reach at all, and `DENSE_RESERVED_SLOT` (**off**), which
+  gives the dense channel's best unheld card the last primary slot. Read
+  [docs/measuring-injection.md](../docs/measuring-injection.md) before switching the second one
+  on: it was measured to change about one operator-prompt decision in seven, and to do nothing
+  at all on the incident that motivated it. With no daemon installed both are inert and recall
+  is exactly the lexical behaviour, said out loud in the first line and in the recall log.
 - **The budget is spent BEFORE the card base is loaded.** Every gate that needs no search
   result runs first. Measured: 2324 calls in one day each paid ~172 ms to load a 2467-card base
   and then died on the query cooldown or the rate cap — and each of them also wrote a

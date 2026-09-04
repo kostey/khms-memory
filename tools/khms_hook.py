@@ -78,6 +78,16 @@ DEDUP_TTL = 12 * 3600.0        # a card may be re-injected after this long
 DAMP_ALPHA = 0.5               # length damping exponent (0 disables)
 DAMP_PIVOT = 85                # ≈ median distinct-token count of a card body
 MIN_PROMPT_LEN = 12
+# The dense channel, if you have one (see khms_recall_hybrid.py for the daemon
+# protocol and the fall-back). Consulted only on operator messages: the agent's own
+# tool traffic is the cheap side of the budget, and buying it extra searches spends
+# the budget where it is worth least. With no daemon these are inert.
+DENSE_EVENTS = frozenset({"UserPromptSubmit"})
+DENSE_TIMEOUT_MS = float(os.environ.get("KHMS_DENSE_TIMEOUT_MS", "150"))
+DENSE_MIN_COS = 0.55           # calibrate: 0.50 doubles the rescues and visibly
+DENSE_RESCUE_N = 5             #   lowers precision
+RESCUE_MIN_FIRST_LEN = 40      # a card whose first line is a bare field says nothing
+DENSE_RESERVED_SLOT = False    # see the block in main(); OFF by default
 PRECHECK_COOLDOWN = 1800.0     # per session, per tag set
 PRECHECK_CAP = 800             # chars
 PRECHECK_TIMEOUT = 8           # seconds
@@ -264,7 +274,7 @@ def recall_cli_since(since_t):
     whole log on a tool call. ONLY src=cli counts - the hook's own lines are what
     made the claim fakeable in the first place."""
     try:
-        with open(P.RECALL_LOG, "rb") as f:
+        with open(ks.recall_log_path(), "rb") as f:
             f.seek(0, 2)
             size = f.tell()
             f.seek(max(0, size - CLAIM_TAIL))
@@ -626,6 +636,22 @@ def try_precheck(payload, st, t):
             + "\nIf any of it bears on this command, open the card before running it.")
 
 
+def dense_hits(query):
+    """[(card id, cosine)] from the dense channel, or [] — never raises, never
+    waits. A missing module, a missing daemon or a slow one all mean the same
+    thing: this call is lexical, exactly as it was before the channel existed."""
+    try:
+        import khms_recall_hybrid as hy
+    except Exception:
+        return []
+    try:
+        hits, err, _ms = hy.dense_query(query, topn=hy.CAND,
+                                        timeout_ms=DENSE_TIMEOUT_MS)
+        return [] if err else hits
+    except Exception:
+        return []
+
+
 def extract_bash_text(payload):
     ti = payload.get("tool_input") or {}
     cmd = str(ti.get("command", ""))[:200]
@@ -785,6 +811,58 @@ def main():
             skips.append((results[0][2]["id"], f"threshold {top_score:.1f}<{thr:.0f}"))
         cands = []
 
+    # ---------------------------------------------------------- dense channel
+    dense = dense_hits(query) if event in DENSE_EVENTS else []
+    mode = "lexical"
+    if dense:
+        by_id = {c["id"]: c for c in cards}
+        have = {c["id"] for _s, _m, c in cands}
+
+        # RESCUE — only ADDS candidates, never reorders the lexical ones, so a
+        # query the lexical channel already answers is untouched. This is the path
+        # that catches a card the lexical channel did not reach AT ALL: the
+        # cross-lingual miss the hybrid channel exists for.
+        rescue = []
+        for cid, cos in dense[:DENSE_RESCUE_N]:
+            if cos < DENSE_MIN_COS or cid in have:
+                continue
+            c = by_id.get(cid)
+            if c is None or c["status"] == "superseded":
+                continue
+            if len(c["first"]) < RESCUE_MIN_FIRST_LEN:
+                continue
+            rescue.append((thr, [], c))
+        if rescue:
+            cands = cands + rescue
+            mode = "hybrid+rescue"
+
+        # RESERVED SLOT — off by default, and it is a different policy from the
+        # rescue: the rescue cannot help when the slots are already spoken for,
+        # which is the case where a lexically-mediocre but semantically-right card
+        # is logged `slots-full` and never served. This gives the dense channel's
+        # best card THAT THE LEXICAL PICKS DO NOT ALREADY CONTAIN the last primary
+        # slot. Scoped to calls that were going to inject anyway: with no lexical
+        # candidate there is no contested slot, and "inject the nearest neighbour
+        # of every prompt" is a much noisier policy than this one.
+        # Measured caveat before you switch it on: on the very incident that
+        # motivated it, the dense channel ALSO ranked the wanted card third, so
+        # this lever did not fix it — raising MAX_PRIMARY did. Switch it on from
+        # your own log, not from this paragraph.
+        if DENSE_RESERVED_SLOT and cands:
+            have = {c["id"] for _s, _m, c in cands}
+            for cid, _cos in dense[:DENSE_RESCUE_N]:
+                if cid in have:
+                    continue
+                c = by_id.get(cid)
+                if c is None or c["status"] == "superseded":
+                    continue
+                if len(c["first"]) < RESCUE_MIN_FIRST_LEN:
+                    continue
+                keep = max(0, MAX_PRIMARY - 1)
+                cands = cands[:keep] + [(thr, [], c)] + cands[keep:]
+                mode = "hybrid+slot"
+                break
+
     if not cands:
         save_state(path, st)
         if event == "UserPromptSubmit":
@@ -809,7 +887,8 @@ def main():
     if event == "UserPromptSubmit":
         text += "\n" + DIRECTIVE_LINE
     emit(event, text)
-    log(event, query, f"INJECT [{','.join(used)}] chars={len(text)}", results, skips, qh)
+    log(event, query, f"INJECT [{','.join(used)}] chars={len(text)}"
+        + ("" if mode == "lexical" else f" mode={mode}"), results, skips, qh)
 
 
 if __name__ == "__main__":

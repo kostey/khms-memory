@@ -34,6 +34,25 @@ git clone <this-repo> /tmp/khms && /tmp/khms/tools/khms_init.sh "$KHMS_ROOT"
 registry, and copies `tools/` and `tools/prompts/` into `$KHMS_ROOT`. It writes nothing into
 `memory/know/`.
 
+**Decide now how the base is versioned, and write the choice down.** Two options, and they
+are not equivalent:
+
+- **A git repository.** `git init` inside `$KHMS_ROOT`, commit after every approval. You get
+  history, `log -p` on a single card, `bisect`, blame, and a remote you can clone. This is the
+  default and the better answer whenever it is allowed.
+- **Hardlinked snapshots** — `tools/khms_snapshot.sh`, for a base that must not be in a
+  repository at all (some operators want their knowledge only on their own machine and their
+  own synced folder, with no remote and no clonable history). `--tag` is the commit, `--list`
+  the log, `--diff` the status, `--restore` the checkout, `--prune` the retention policy;
+  unchanged files are hardlinks, so a daily snapshot of a large base costs the bytes that
+  actually changed, and every snapshot is a complete tree you can read with `cat`.
+  What you do NOT get: bisect, blame, per-file history, or a remote. Run it from cron before
+  the nightly and after the morning review, and keep the snapshot root OUTSIDE the base —
+  inside, a synced folder would carry every snapshot too.
+
+Whichever you choose, the point is the same one: a tool that rewrites eleven cards at 03:30
+is recoverable only if something took a copy first.
+
 Resulting layout — memorize it, you will refer to it constantly:
 
 ```
@@ -55,7 +74,7 @@ this is the operational summary.
 
 ```markdown
 ---
-id: K-00042                     # K-NNNNN, sequential, assigned at approval, never reused
+id: K-NNNNN                     # K-NNNNN, sequential, assigned at approval, never reused
 type: problem→solution          # shape of the knowledge — see the table below
 level: observation              # observation | derived | assumption
 status: active                  # active | challenged | refuted | superseded | condensed
@@ -88,6 +107,11 @@ VERIFIED: ...
 | `policy` | a way of working is adopted | `RULE:` `LIMITS:` `IMPLICATIONS:` | derived |
 | `goal→method` | a repeatable method exists | `GOAL:` `METHOD:` `PREREQUISITES:` `COST:` | derived |
 | `overview` | a topic needs an anchor and a map | short narrative + links | derived |
+
+Ids in this repository are placeholders: `K-NNNNN` in prose, the `K-9xxxx` band in the
+tests, and the fictional low ids of [examples/](examples/). A real base allocates from
+its own counter upward, so nothing here can be mistaken for a card of anybody's actual
+memory.
 
 Four rules that decide most edge cases:
 
@@ -183,6 +207,18 @@ expensive attention is spent only where it is needed.
    → the claim goes; unbacked specific → the specific goes; no quotes → the card goes),
    deduplicates, enforces schema, links candidates to existing cards, flags contradictions and
    status-change proposals. Writes `memory/inbox/DATE.md`. Still no IDs, still no authority.
+
+   **Merge pressure, because a pipeline that only produces never merges.** Before the model is
+   asked what a candidate replaces, `tools/nearest_cards.py` TELLS it which active cards rank
+   nearest (zero model tokens, one `NEAREST:` line per candidate). After it answers,
+   `tools/verify_relations.py` CHECKS the answer: every candidate must carry exactly one
+   `RELATION:` line naming an existing card it supersedes / supports / contradicts, or saying
+   in one sentence why its nearest is unrelated. It also enforces a per-night CAP
+   (`NIGHTLY_MAX_CARDS`, `WEEKLY_MAX_CARDS`) that is a review-capacity number, not a knowledge
+   one. Nothing is deleted: a candidate that fails is MOVED, whole, into
+   `## DROPPED (no valid RELATION)`, and the overflow into `## DEFERRED`, both at the end of
+   the same file. Ask for this early — measured in the reference deployment, a base without it
+   held 17 cards about one measured parameter and 8 superseded edges in total.
 4. **Morning review** (you, in a full session, at the start of the day). Read the `## Flagged`
    section with real attention; approve or fix the rest quickly. Then:
 
@@ -191,8 +227,10 @@ expensive attention is spent only where it is needed.
    "$KHMS_ROOT/tools/build_views.py"
    ```
 
-   `approve_inbox.py` allocates the sequential IDs from `tools/.next_id`, rewrites temp
-   cross-references, and writes the cards. It exits non-zero if any card failed to parse —
+   `approve_inbox.py` STOPS at `## DEFERRED` and `## DROPPED` — the candidates the relation
+   gate withheld are reported and not imported, and rescuing one means moving its block back
+   under `## Cards` by hand. It then allocates the sequential IDs from `tools/.next_id`,
+   rewrites temp cross-references, and writes the cards. It exits non-zero if any card failed to parse —
    treat a partial import as a failure, never as a finished one. It also **refuses the whole
    run, before allocating any ID, when a card says it corrects something without naming what**
    (`tools/khms_lint.py`): add the `contradicts` / `supersedes` / `refuted_by` edge it asks for
@@ -214,6 +252,7 @@ happened or did not, and that leaves a trace showing which.
 
 ```bash
 "$KHMS_ROOT/tools/build_views.py"                 # -> "OK: N cards …"; non-zero = schema break
+"$KHMS_ROOT/tools/verify_relations.py" --self-test  # -> "SELFTEST OK — 12/12 cases"
 "$KHMS_ROOT/tools/recall.sh" checksum mismatch    # -> ranked cards, or "nothing on record"
 "$KHMS_ROOT/tools/precheck.sh" sensors            # -> policies/gotchas, or "nothing on record"
 echo '{"hook_event_name":"UserPromptSubmit","prompt":"why do the checksums keep failing","session_id":"t1"}' \
@@ -227,6 +266,12 @@ the bar was *not* injected (`dedup`, `cap`, `threshold`). Kill switch, when the 
 in your way: `touch "$KHMS_ROOT/tools/.hooks-off"` (or `KHMS_HOOKS_OFF=1`).
 
 ## Step 8 — Calibrate, and keep the numbers out of the rules
+
+Start by measuring what the automatic recall is actually worth to you —
+[docs/measuring-injection.md](docs/measuring-injection.md) has the tools
+(`inject_cited.py`, `khms_debt.py`), the experiment file that switches injection off per event,
+and the traps in comparing a before and an after. In the reference deployment that measurement
+took two events out of the wiring.
 
 Every number in this system is configuration, not law: injection thresholds, the rate cap, the
 dedup TTL, evidence weights, the belief slope. They are listed in one place —

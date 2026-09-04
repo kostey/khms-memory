@@ -1,7 +1,8 @@
 # KHMS — a file-based long-term memory an agent can install into itself
 
 KHMS ("know-how management system") is a long-term memory for LLM agents made of plain
-markdown files in a git repository. Every piece of knowledge is one immutable **card** with
+markdown files — in a git repository, or in a plain directory with hardlinked snapshots for
+the deployments that will not put their memory in a repository at all. Every piece of knowledge is one immutable **card** with
 YAML frontmatter — what kind of knowledge it is, how strongly it is evidenced, where it came
 from, and which other cards it is derived from, supports or contradicts. Cards are never
 edited and never deleted: a correction is a new card that *supersedes* the old one, and a
@@ -18,6 +19,8 @@ deployment's values, not laws.
 ## Read next
 
 - **Setting up memory for yourself?** → **[AGENTS.md](AGENTS.md)** — the one-pass bootstrap.
+- Wondering whether the automatic recall is worth its context? →
+  [docs/measuring-injection.md](docs/measuring-injection.md) — measure it, do not argue it.
 - Want the whole model first? → [spec/khms-spec.md](spec/khms-spec.md).
 - Wiring it into Claude Code (hooks, cron, dependencies)? → [claude-code/](claude-code/README.md).
 - Want to see cards before writing any? → [examples/](examples/) (fictional weather-station domain).

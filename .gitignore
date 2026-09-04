@@ -10,6 +10,8 @@ __pycache__/
 .inject.log
 .recall.log
 .precheck.log
+.claim_gate.log
+khms_experiment.json
 .last-nightly
 .last-weekly
 .nightly.lock

@@ -45,28 +45,28 @@ def meta(**links):
 
 class LintRule(unittest.TestCase):
     def test_correction_without_edge_is_refused(self):
-        msg = L.check_correction_edges("C1", meta(), CORRECTION_BODY, {"K-00042"})
+        msg = L.check_correction_edges("C1", meta(), CORRECTION_BODY, {"K-90042"})
         self.assertIsNotNone(msg)
         self.assertIn("links.contradicts", msg)      # the refusal NAMES the edge
         self.assertIn("links.supersedes", msg)
         self.assertIn("refuted_by", msg)
 
     def test_correction_with_an_edge_passes(self):
-        for links in ({"contradicts": ["K-00042"]}, {"supersedes": "K-00042"},
-                      {"refuted_by": ["K-00042"]}):
+        for links in ({"contradicts": ["K-90042"]}, {"supersedes": "K-90042"},
+                      {"refuted_by": ["K-90042"]}):
             self.assertIsNone(L.check_correction_edges(
-                "C1", meta(**links), CORRECTION_BODY, {"K-00042"}), links)
+                "C1", meta(**links), CORRECTION_BODY, {"K-90042"}), links)
 
     def test_edge_pointing_at_nothing_is_refused(self):
         msg = L.check_correction_edges("C1", meta(contradicts=["K-99999"]),
-                                       CORRECTION_BODY, {"K-00042"})
+                                       CORRECTION_BODY, {"K-90042"})
         self.assertIn("points at nothing", msg)
 
     def test_stray_top_level_edge_counts(self):
         m = meta()
-        m["contradicts"] = ["K-00042"]
+        m["contradicts"] = ["K-90042"]
         self.assertIsNone(L.check_correction_edges("C1", m, CORRECTION_BODY,
-                                                   {"K-00042"}))
+                                                   {"K-90042"}))
 
     def test_escape_hatch(self):
         body = CORRECTION_BODY + "\nNO-CORRECTION-TARGET: never carded.\n"
@@ -80,7 +80,7 @@ class LintRule(unittest.TestCase):
             self.assertEqual(L.correction_terms(body), [], body)
 
     def test_a_correction_of_the_record_fires(self):
-        body = "The claim in card K-00042 is no longer true: the part was fitted.\n"
+        body = "The claim in card K-90042 is no longer true: the part was fitted.\n"
         self.assertTrue(L.correction_terms(body))
         self.assertIsNotNone(L.check_correction_edges("C1", meta(), body, None))
 
@@ -119,9 +119,9 @@ class ApproveRefuses(unittest.TestCase):
         os.makedirs(os.path.join(self.root, "tools"))
         self.counter = os.path.join(self.root, "tools", ".next_id")
         with open(self.counter, "w") as f:
-            f.write("500\n")
-        with open(os.path.join(self.know, "K-00042.md"), "w") as f:
-            f.write("---\nid: K-00042\n---\nthe old card\n")
+            f.write("90500\n")
+        with open(os.path.join(self.know, "K-90042.md"), "w") as f:
+            f.write("---\nid: K-90042\n---\nthe old card\n")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -140,15 +140,15 @@ class ApproveRefuses(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("REFUSED", r.stdout)
         self.assertIn("links.contradicts", r.stdout)
-        self.assertFalse(os.path.exists(os.path.join(self.know, "K-00500.md")))
-        self.assertEqual(open(self.counter).read().strip(), "500")   # no id burnt
+        self.assertFalse(os.path.exists(os.path.join(self.know, "K-90500.md")))
+        self.assertEqual(open(self.counter).read().strip(), "90500")   # no id burnt
 
     def test_accepts_the_same_card_with_the_edge(self):
-        r = self._run(CARD % "K-00042")
+        r = self._run(CARD % "K-90042")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        written = os.path.join(self.know, "K-00500.md")
+        written = os.path.join(self.know, "K-90500.md")
         self.assertTrue(os.path.exists(written))
-        self.assertIn("contradicts: [K-00042]", open(written).read())
+        self.assertIn("contradicts: [K-90042]", open(written).read())
 
 
 def load_hook():
@@ -168,9 +168,9 @@ def card(cid, first, status="active", links=None, tags=("sensor",)):
             "nbody": body.lower(), "first": first, "fog": False, "path": cid}
 
 
-OLD = card("K-00042", "The sensor branch has no pull-ups — keep the device disconnected")
-NEW = card("K-00300", "Real culprit corrected — the branch is healthy, the new device is at fault",
-           links={"contradicts": ["K-00042"]})
+OLD = card("K-90042", "The sensor branch has no pull-ups — keep the device disconnected")
+NEW = card("K-90300", "Real culprit corrected — the branch is healthy, the new device is at fault",
+           links={"contradicts": ["K-90042"]})
 
 
 class ReverseInjection(unittest.TestCase):
@@ -183,48 +183,48 @@ class ReverseInjection(unittest.TestCase):
 
     def test_active_card_carries_its_corrector(self):
         text, used = self.build([OLD, NEW], OLD)
-        self.assertIn("! CORRECTED BY K-00300", text)
-        self.assertEqual(used, ["K-00042"])   # a pointer eats no slot, is not "injected"
+        self.assertIn("! CORRECTED BY K-90300", text)
+        self.assertEqual(used, ["K-90042"])   # a pointer eats no slot, is not "injected"
 
     def test_card_with_no_corrector_is_unchanged(self):
-        lone = card("K-00777", "Something else entirely")
+        lone = card("K-90777", "Something else entirely")
         text, _ = self.build([lone, NEW], lone)
         self.assertNotIn("CORRECTED BY", text)
 
     def test_forward_refuted_by_also_counts(self):
-        old = card("K-00043", "An old claim", links={"refuted_by": ["K-00300"]})
+        old = card("K-90043", "An old claim", links={"refuted_by": ["K-90300"]})
         text, _ = self.build([old, NEW], old)
-        self.assertIn("! CORRECTED BY K-00300", text)
+        self.assertIn("! CORRECTED BY K-90300", text)
 
     def test_refuted_card_keeps_the_full_corrector_line(self):
-        old = card("K-00042", "Old claim", status="refuted",
-                   links={"refuted_by": ["K-00300"]})
+        old = card("K-90042", "Old claim", status="refuted",
+                   links={"refuted_by": ["K-90300"]})
         text, used = self.build([old, NEW], old)
-        self.assertIn("-> corrected by: K-00300", text)
-        self.assertIn("K-00300", used)
-        self.assertEqual(text.count("K-00300"), 1)   # not repeated as a pointer
+        self.assertIn("-> corrected by: K-90300", text)
+        self.assertIn("K-90300", used)
+        self.assertEqual(text.count("K-90300"), 1)   # not repeated as a pointer
 
     def test_pointer_survives_a_full_budget(self):
-        big = card("K-00042", "x" * 800)
+        big = card("K-90042", "x" * 800)
         old_cap, self.hook.CHAR_CAP = self.hook.CHAR_CAP, 200
         try:
             text, _ = self.build([big, NEW], big)
         finally:
             self.hook.CHAR_CAP = old_cap
-        self.assertIn("! CORRECTED BY K-00300", text)
+        self.assertIn("! CORRECTED BY K-90300", text)
         self.assertLess(len(text), 200 + 2 * self.hook.WARN_CHARS + 80)
 
     def test_at_most_two_pointers(self):
-        cors = [card(f"K-0030{i}", f"corrector {i}", links={"contradicts": ["K-00042"]})
+        cors = [card(f"K-0030{i}", f"corrector {i}", links={"contradicts": ["K-90042"]})
                 for i in range(4)]
         text, _ = self.build([OLD] + cors, OLD)
         self.assertEqual(text.count("! CORRECTED BY"), self.hook.MAX_WARN)
 
     def test_malformed_links_do_not_raise(self):
-        broken = card("K-00042", "Old claim")
+        broken = card("K-90042", "Old claim")
         broken["links"] = {"supports": []}
         text, _ = self.build([broken, NEW], broken)
-        self.assertIn("K-00042", text)
+        self.assertIn("K-90042", text)
 
 
 class HookProcess(unittest.TestCase):

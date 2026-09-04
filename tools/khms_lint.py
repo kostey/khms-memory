@@ -55,7 +55,7 @@ CARD_ID_RE = re.compile(r"\bK-\d{5}\b")
 #   CONTEXT — everything else, only on a line that ALSO talks about the record
 #           (a card id, "card", "knowledge base", "claim", and the operator
 #           language's equivalents).  "We repaired the cable" does not fire;
-#           "correction to card K-00042" does.
+#           "correction to card K-NNNNN" does.
 #
 # Same list of words the rule names, anchored so each means what the rule means.
 # Calibrated together: 41 of 2187 cards (1.9 %), the card of the incident among

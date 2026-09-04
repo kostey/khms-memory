@@ -30,3 +30,12 @@ HOOKS_OFF = os.path.join(TOOLS_DIR, ".hooks-off")
 LEN_CACHE = os.path.join(TOOLS_DIR, ".cardlen.json")
 GLOSSARY = os.path.join(TOOLS_DIR, "glossary.txt")
 MEMORY_MD = os.path.join(ROOT, "MEMORY.md")
+
+# Added 2026-09: the retrieval experiment's switch, the audit log of the
+# retrieval-claim gate, and the single source of the reply directive. All three
+# are optional — every reader of them degrades to "as before" when absent.
+EXPERIMENT = os.environ.get("KHMS_EXPERIMENT",
+                            os.path.join(TOOLS_DIR, "khms_experiment.json"))
+CLAIM_LOG = os.environ.get("KHMS_CLAIM_LOG",
+                           os.path.join(TOOLS_DIR, ".claim_gate.log"))
+DIRECTIVE_FILE = os.path.join(TOOLS_DIR, "prompts", "report_directive.md")

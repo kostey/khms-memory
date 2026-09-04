@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """KHMS harness hook — the RETRIEVAL FLOOR.
 
-One executable, wired to five harness events (see claude-code/README.md):
+One executable, wired to a handful of harness events (see claude-code/README.md):
 
-  SessionStart        report an unreviewed inbox — the review is the day's first duty
-  UserPromptSubmit    score the operator's message, inject matching cards
+  SessionStart        report an unreviewed inbox, and put the reply directive into
+                      the session ONCE
+  UserPromptSubmit    score the operator's message, inject matching cards, open a
+                      gated turn for the retrieval-claim gate
   PreToolUse:Bash     run precheck.sh automatically for a named risky-command class
   PreToolUse:Edit|Write   score the file path and the edited text
-  PostToolUse:Bash / PostToolUseFailure   score the command and its error lines
+  PreToolUse:<report tool>  the retrieval-claim gate: DENY a report whose `base:`
+                      line cites cards that no recall of this turn backs
+  PostToolUse:Bash / PostToolUseFailure   score the command and its error lines.
+                      MEASURED AND SWITCHED OFF in the reference deployment — see
+                      docs/measuring-injection.md before wiring them.
 
 Why a floor at all: a rule that says "consult the base first" fails by never
 firing, not by being wrong, and the moments it fails in are exactly the moments
@@ -25,6 +31,16 @@ Design rules this file obeys:
   * BOUNDED. Thresholds, at most two cards, a character cap, a rate cap per
     window, a per-card dedup TTL — all of them §7 configuration, listed together
     at the top and meant to be recalibrated against your own .inject.log.
+  * THE BUDGET IS SPENT BEFORE THE BASE IS LOADED. Every gate that needs no
+    search result — the kill switch, the domain filter, the query cooldown, the
+    rate cap, the per-event switch — runs before load_cards(). Measured in the
+    reference deployment: 2324 hook calls in one day paid ~172 ms each for a
+    card base they then threw away on a gate, and each of them also wrote a
+    "nothing found" line into the retrieval log, which is how 87 % of that log
+    came to be a record of non-retrievals.
+  * WHAT IT INJECTS IS AN EXPERIMENT, NOT A CONSTANT. tools/khms_experiment.json
+    switches injection off per event so the value of each one can be measured
+    rather than assumed; deleting the file rolls everything back.
 
 Kill switch: touch $KHMS_ROOT/tools/.hooks-off   (or export KHMS_HOOKS_OFF=1)
 """
@@ -100,33 +116,240 @@ RISKY = [
     (re.compile(r"(^|[\s;&|'\"])[\w./-]*deploy/"), ("deployment",)),
 ]
 
-REPORT_DIRECTIVE = (
-    "\n\nREQUIRED in your reply, one line: "
-    "`recall: <what I searched for> -> {found}`\n"
-    "If a card is relevant, open it whole (memory/know/<id>.md) and follow its links. "
-    "If nothing fits, say so — \"nothing on record\" is a valid and useful answer.\n"
-    "\nALSO REQUIRED whenever you assert anything about the STATE of a system "
-    "(running / stopped, deployed, measured X): "
-    "`verified: <the command or file:line whose output I just read>`\n"
-    "A process id, an exit code, a value in a config file or a subagent's report are "
-    "signals about another layer, not verification of the state itself. If you cannot "
-    "name the command, write \"unverified\" — that is a valid answer; a silent claim is not.\n"
-    "A telemetry/diagnostics VALUE counts as verification only together with its "
-    "freshness evidence (stale flag, sample age, publisher liveness): a perfectly "
-    "constant physical reading is a freeze suspect before it is a stability claim.\n"
-    "\nAND THE SECOND HALF OF THAT SAME DUTY, one more line: "
-    "`if I were wrong: <how that output would have looked DIFFERENT>`\n"
-    "The `verified:` line asks only whether something was run, never whether its output "
-    "supports the claim — and a check that passes whether or not the thing it guards is "
-    "healthy is not a check. Four traps it is there to catch: an empty search result is "
-    "NOT evidence of absence until that same pattern has shown it can find what it is "
-    "looking for; a metric of the form \"count over the last N seconds\" must not be read "
-    "until N seconds after an intervention, or the window still covers the period before "
-    "the fix; `ps -o pcpu` is an average over the process's whole LIFETIME, not its load "
-    "right now (`top -bn2` measures that); and when COMPARING TWO MACHINES you must name "
-    "the ONE instrument used on both, because two instruments measure two quantities and "
-    "the difference between them means nothing.\n"
+# ------------------------------------------------------------- the directive
+# The three mandatory reply lines. This was a 1813-character constant appended to
+# EVERY operator prompt until it was measured: 46 firings on one audited day, the
+# same paragraph re-sent each time, restating a rule the agent's own instructions
+# already carried. The text now lives in ONE file, enters the session ONCE at
+# SessionStart, and every prompt carries the pointer line below instead.
+DIRECTIVE_LINE = (
+    "REQUIRED: base: <what I searched for -> the cards, or 'did not search - why'>"
+    " \u00b7 verified: <the command or file:line whose output I read | unverified>"
+    " \u00b7 if I were wrong: <how that output would have looked different>"
+    "  (definition: tools/prompts/report_directive.md)"
 )
+COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+
+
+def directive_text():
+    """The full directive, from its single source. A missing or unreadable file
+    degrades to the one-liner: the session start must never fail on it."""
+    try:
+        with open(P.DIRECTIVE_FILE, encoding="utf-8") as f:
+            body = COMMENT_RE.sub("", f.read())
+    except OSError:
+        return DIRECTIVE_LINE
+    return body.strip() or DIRECTIVE_LINE
+
+
+# --------------------------------------------------------------- experiment
+# tools/khms_experiment.json — the per-event injection switch and the flag of the
+# retrieval-claim gate. FAIL-OPEN IN BOTH DIRECTIONS: a missing, empty or broken
+# file means "behave exactly as before the experiment", so deleting the file is a
+# complete rollback without touching a line of code. See docs/measuring-injection.md
+# for how to run one and what to compare afterwards; an example config ships as
+# tools/khms_experiment.example.json.
+INJECT_EVENTS = ("UserPromptSubmit", "PreToolUse", "PostToolUse",
+                 "PostToolUseFailure")
+SHORT_EVENT = {"UserPromptSubmit": "ups", "PreToolUse": "pre",
+               "PostToolUse": "ptu", "PostToolUseFailure": "ptuf"}
+EXP_TAG = ""                   # set once per run in main(); stamped into the log
+
+
+def load_experiment():
+    try:
+        with open(P.EXPERIMENT, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def inject_on(exp, event):
+    return bool((exp.get("inject") or {}).get(event, True))
+
+
+def exp_tag(exp):
+    """What goes into the audit log, so a day's records say which regime produced
+    them. Without it a before/after comparison has to be reconstructed from file
+    mtimes, which is not evidence."""
+    if not exp:
+        return ""
+    name = exp.get("name")
+    if not name:
+        off = [SHORT_EVENT[e] for e in INJECT_EVENTS if not inject_on(exp, e)]
+        name = ("no-" + "+".join(off)) if off else "on"
+    return f"exp:{name}"
+
+
+# ------------------------------------------------- the retrieval-claim gate
+# The `base:` line of the directive above is a CHECK, and until this gate existed
+# it was a check whose passing condition held whether or not a retrieval had
+# happened: the hook's own injection could satisfy it. That is the shape of the
+# failure the base has a card about, applied to the compliance line itself.
+#
+# So: a report to the principal that CITES CARD IDS in its `base:` line, while no
+# explicit recall of this turn matches the query it claims to have run, is DENIED.
+# The gate is deliberately narrow. It denies exactly two things:
+#   (i)  a substantial report with no `base:` line at all;
+#   (ii) a `base:` line that cites card ids with no matching recall in this turn.
+# A line that cites no card claims nothing about the base and is allowed; so is
+# every honest form ("did not search", "nothing on record"). The thing being
+# checked is a CITATION, not the wording of the line.
+#
+# REPORT_TOOL_RE is the tool through which the agent reports to its principal —
+# the one action it cannot skip, because the principal only ever learns anything
+# through it. Set KHMS_REPORT_TOOL to your own (a chat tool, a mail tool, a ticket
+# tool); an empty value disables the gate entirely.
+REPORT_TOOL_RE = re.compile(
+    os.environ.get("KHMS_REPORT_TOOL") or r"(?i)discord.*reply|reply.*discord")
+# When set, ONLY prompts matching this pattern open a gated turn (in the reference
+# deployment: the ones that arrived through the reporting channel, since replies in
+# the terminal are not reports). Unset, every operator prompt opens one.
+REPORT_CHANNEL_RE = (re.compile(os.environ["KHMS_REPORT_CHANNEL"])
+                     if os.environ.get("KHMS_REPORT_CHANNEL") else None)
+CLAIM_MIN_CHARS = 200          # below this a report need not carry the line
+CLAIM_SHARE = 0.5              # token overlap with a recall of THIS turn
+CLAIM_SLACK = 3.0              # s; the recall log stores whole seconds
+CLAIM_TAIL = 262144            # bytes of the recall log read backwards
+# The honest forms. A `base:` line that says it did not search is ALWAYS allowed:
+# the gate exists to stop unbacked CITATIONS, and "nothing on record" is a valid
+# and useful answer.
+CLAIM_HONEST = ("did not search", "didn't search", "no search", "from memory",
+                "nothing on record", "nothing found", "found nothing",
+                "nothing above the bar", "base is silent")
+
+CLAIM_DENY_CITE = (
+    "Your `base:` line cites cards but no explicit recall ran in this turn - run "
+    "`tools/recall.sh '<query>'` and send again, or write `base: did not search - "
+    "<why>`. (reason: %s; the check reads src=cli lines of tools/.recall.log since "
+    "this turn began)")
+CLAIM_DENY_MISSING = (
+    "This report to your principal is missing the mandatory `base:` line (%s). "
+    "Write `base: <query from tools/recall.sh> -> <cards>`, or honestly `base: did "
+    "not search - <why>`; both are valid, silence is not. "
+    "Definition: tools/prompts/report_directive.md")
+
+
+def _report_text(payload):
+    ti = payload.get("tool_input") or {}
+    for k in ("text", "content", "message", "body"):
+        v = ti.get(k)
+        if isinstance(v, str) and v:
+            return v
+    return " ".join(str(v) for v in ti.values() if isinstance(v, str))
+
+
+def _claim_line(text):
+    """The `base:` line, raw and normalised, tolerant of bullets and bold."""
+    for ln in (text or "").splitlines():
+        n = ks.norm(ln).strip().lstrip("-*_>+ \t")
+        if n.startswith("base:") or n.startswith("base :"):
+            return ln.strip(), n
+    return None, None
+
+
+def _claim_query_tokens(nline):
+    """Tokens of the QUERY part: after `base:`, before the arrow, card ids out."""
+    q = nline.split(":", 1)[1] if ":" in nline else nline
+    q = re.split(r"\u2192|->|=>", q)[0]
+    q = re.sub(r"k-\d+", " ", q)
+    return set(ks.tokens(q))
+
+
+def recall_cli_since(since_t):
+    """Token sets of the src=cli lines of the recall log at or after since_t.
+
+    Reads the TAIL only: the log grows without bound and a hook may not read a
+    whole log on a tool call. ONLY src=cli counts - the hook's own lines are what
+    made the claim fakeable in the first place."""
+    try:
+        with open(P.RECALL_LOG, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - CLAIM_TAIL))
+            data = f.read().decode("utf-8", "replace")
+    except OSError:
+        return []
+    lines = data.splitlines()
+    if size > CLAIM_TAIL and lines:
+        lines = lines[1:]                      # the seek cut one line in half
+    out = []
+    for ln in lines:
+        parts = ln.split(" | ")
+        if len(parts) < 5 or not parts[-1].startswith("src=cli"):
+            continue
+        try:
+            ts = datetime.datetime.fromisoformat(parts[0]).timestamp()
+        except ValueError:
+            continue
+        if ts + CLAIM_SLACK < since_t:
+            continue
+        out.append(set(ks.tokens(" | ".join(parts[1:-3]))))
+    return out
+
+
+def claim_verdict(text, st):
+    """(ALLOW|DENY|EXEMPT, reason, query-part). Never raises."""
+    turn_start = st.get("turn_start")
+    pending = bool(st.get("claim_pending")) and turn_start is not None
+    line, nline = _claim_line(text)
+    if line is None:
+        if pending and len(text or "") >= CLAIM_MIN_CHARS:
+            return "DENY", "no base: line (%d chars)" % len(text), ""
+        return ("EXEMPT",
+                "short report" if pending else "no gated turn open", "")
+    qpart = nline[:120]
+    for h in CLAIM_HONEST:
+        if h in nline:
+            return "ALLOW", "honest form (%s)" % h, qpart
+    if not re.search(r"k-\d{4,6}", nline):
+        return "ALLOW", "line cites no card", qpart
+    if turn_start is None:
+        return "EXEMPT", "no gated turn in this session", qpart
+    recalls = recall_cli_since(turn_start)
+    if not recalls:
+        return "DENY", "no src=cli recall in this turn", qpart
+    qtok = _claim_query_tokens(nline)
+    if not qtok:
+        return "ALLOW", "no query given, but a recall did run in this turn", qpart
+    best = max(len(qtok & r) / float(len(qtok)) for r in recalls)
+    if best >= CLAIM_SHARE:
+        return "ALLOW", "%.0f%% overlap with a recall in this turn" % (100 * best), qpart
+    return "DENY", "best overlap with a recall in this turn only %.0f%%" % (100 * best), qpart
+
+
+def claim_log(session, verdict, why, qpart):
+    try:
+        with open(P.CLAIM_LOG, "a", encoding="utf-8") as f:
+            f.write("%s | %s | %s | %s | %s\n" % (
+                datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+                session or "-", verdict, why, (qpart or "")[:120]))
+    except OSError:
+        pass
+
+
+def run_claim_gate(payload, event, exp):
+    """True == the report was DENIED (and the denial has been printed)."""
+    if not exp.get("claim_gate", True):
+        return False
+    session = payload.get("session_id", "")
+    path, st = load_state(session)
+    verdict, why, qpart = claim_verdict(_report_text(payload), st)
+    claim_log(session, verdict, why, qpart)
+    if verdict == "DENY":
+        reason = (CLAIM_DENY_MISSING % why) if why.startswith("no base:") \
+            else (CLAIM_DENY_CITE % why)
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": event,
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason}}))
+        log(event, "report-tool", "DENY (claim: %s)" % why)
+        return True
+    if verdict == "ALLOW" and st.get("claim_pending"):
+        st["claim_pending"] = False
+        save_state(path, st)
+    return False
 
 
 def now():
@@ -143,7 +366,8 @@ def log(event, query, action, results=None, skips=None, qh=""):
         with open(P.INJECT_LOG, "a", encoding="utf-8") as f:
             f.write(f"{datetime.datetime.now().astimezone().isoformat(timespec='seconds')}"
                     f" | {event} | q={q} | nhits={len(results)} | top={top} | {action}"
-                    f"{(' qh=' + qh) if qh else ''}\n")
+                    f"{(' qh=' + qh) if qh else ''}"
+                    f"{(' ' + EXP_TAG) if EXP_TAG else ''}\n")
     except OSError:
         pass
 
@@ -340,15 +564,21 @@ def handle_session_start():
             if m and not os.path.exists(os.path.join(P.TOOLS_DIR, f".reviewed-{m.group(1)}")):
                 unreviewed.append(f)
     except OSError:
-        return
+        unreviewed = []      # no inbox yet; the directive below still goes in
+    parts = []
     if unreviewed:
-        emit("SessionStart",
-             "KHMS: UNREVIEWED INBOX: " + ", ".join(unreviewed)
-             + " — review it (approve_inbox.py, build_views.py, report to the operator) "
-               "BEFORE other work. Mark it done with: touch tools/.reviewed-<date>")
+        parts.append(
+            "KHMS: UNREVIEWED INBOX: " + ", ".join(unreviewed)
+            + " — review it (approve_inbox.py, build_views.py, report to the operator) "
+              "BEFORE other work. Mark it done with: touch tools/.reviewed-<date>")
         log("SessionStart", "inbox-check", f"inject inbox={','.join(unreviewed)}")
     else:
         log("SessionStart", "inbox-check", "silent (inbox clean)")
+
+    # The full directive enters the session HERE, once, instead of being appended
+    # to every one of the day's operator prompts.
+    parts.append(directive_text())
+    emit("SessionStart", "\n\n".join(parts))
 
 
 def risky_tags(cmd):
@@ -415,6 +645,23 @@ def main():
         return
     payload = json.load(sys.stdin)
     event = payload.get("hook_event_name", "")
+    global EXP_TAG
+    exp = load_experiment()
+    EXP_TAG = exp_tag(exp)
+
+    # The report to the principal is gated BEFORE anything else costs anything:
+    # it is a permission decision, not a retrieval.
+    if (event == "PreToolUse"
+            and REPORT_TOOL_RE.pattern
+            and REPORT_TOOL_RE.search(str(payload.get("tool_name", "")))):
+        try:
+            if run_claim_gate(payload, event, exp):
+                return
+        except Exception as exc:                                   # noqa: BLE001
+            # FAIL OPEN, loudly: a gate that throws must never stand between the
+            # agent and its report.
+            log(event, "report-tool", f"claim-gate error {exc}")
+        return
 
     if event == "SessionStart":
         handle_session_start()
@@ -425,6 +672,14 @@ def main():
     tool = payload.get("tool_name")
     if event == "UserPromptSubmit":
         raw = str(payload.get("prompt", ""))
+        # A gated TURN starts here — detected BEFORE the tag stripping below eats
+        # the channel tag. Everything until the next such prompt is "this turn"
+        # for the retrieval-claim gate.
+        if REPORT_CHANNEL_RE is None or REPORT_CHANNEL_RE.search(raw):
+            _p, _st = load_state(payload.get("session_id", ""))
+            _st["turn_start"] = now()
+            _st["claim_pending"] = True
+            save_state(_p, _st)
         raw = re.sub(r"<[^>]{1,400}>", " ", raw)          # strip harness/channel tags
         if len(raw.strip()) < MIN_PROMPT_LEN:
             log(event, raw, "skip (short)")
@@ -444,6 +699,18 @@ def main():
         if query is None and not (event == "PreToolUse" and tool == "Bash"):
             return
 
+    # An event whose card injection is switched off exits HERE — no state, no
+    # card base, no search, no line in the recall log. The UserPromptSubmit
+    # handler above still ran (the turn marker), and the prompt still gets the
+    # one-line directive: the experiment removes the CARDS, not the duty to say
+    # where an answer came from.
+    if not inject_on(exp, event) and not (event == "PreToolUse"
+                                          and tool == "Bash"):
+        if event == "UserPromptSubmit":
+            emit(event, DIRECTIVE_LINE)
+        log(event, query, "skip (exp:no-inject)")
+        return
+
     path, st = load_state(payload.get("session_id", ""))
     t = now()
 
@@ -459,6 +726,12 @@ def main():
             return
         if query is None:
             save_state(path, st)
+            return
+        # PreToolUse(Bash) reaches here only after precheck: the automatic
+        # precheck is NOT part of the injection experiment, the cards are.
+        if not inject_on(exp, event):
+            save_state(path, st)
+            log(event, query, "skip (exp:no-inject)")
             return
 
     qh = hashlib.sha1(query.encode("utf-8", "replace")).hexdigest()[:12]
@@ -500,8 +773,8 @@ def main():
             if results:
                 skips.append((results[0][2]["id"], f"cap top={top_score:.1f}"))
             if event == "UserPromptSubmit":
-                emit(event, REPORT_DIRECTIVE.format(
-                    found="nothing above the bar (rate cap) — the base is silent on this"))
+                emit(event, DIRECTIVE_LINE
+                     + "  (no cards this turn: rate cap)")
             log(event, query, "skip (rate cap)", results, skips, qh)
             return
         st["bypass"].append(t)
@@ -515,8 +788,8 @@ def main():
     if not cands:
         save_state(path, st)
         if event == "UserPromptSubmit":
-            emit(event, REPORT_DIRECTIVE.format(
-                found="nothing above the bar — the base is silent on this"))
+            emit(event, DIRECTIVE_LINE
+                 + "  (no cards this turn: nothing above the bar)")
         log(event, query, "silent (below threshold)", results, skips, qh)
         return
 
@@ -524,8 +797,8 @@ def main():
     if not text:
         save_state(path, st)
         if event == "UserPromptSubmit":
-            emit(event, REPORT_DIRECTIVE.format(
-                found="nothing new (the relevant cards already came up this session)"))
+            emit(event, DIRECTIVE_LINE
+                 + "  (no cards this turn: the relevant ones already came up)")
         log(event, query, "silent (all deduped)", results, skips, qh)
         return
 
@@ -534,7 +807,7 @@ def main():
     st["recent"].append(t)
     save_state(path, st)
     if event == "UserPromptSubmit":
-        text += REPORT_DIRECTIVE.format(found="see the cards above")
+        text += "\n" + DIRECTIVE_LINE
     emit(event, text)
     log(event, query, f"INJECT [{','.join(used)}] chars={len(text)}", results, skips, qh)
 

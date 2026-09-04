@@ -26,12 +26,35 @@ the only one in the whole system.
 
 | Event | Matcher | What the hook does |
 |---|---|---|
-| `SessionStart` | — | Reports an unreviewed inbox: "review it before other work". Silent when the inbox is clean. |
-| `UserPromptSubmit` | — | Scores the operator's message against the card base; injects up to two cards plus their correctors, and appends the reply directive (`recall:` / `verified:` / `if I were wrong:` lines). |
+| `SessionStart` | — | Reports an unreviewed inbox ("review it before other work"; silent when the inbox is clean) and puts the full reply directive into the session ONCE. |
+| `UserPromptSubmit` | — | Scores the operator's message against the card base; injects up to two cards plus their correctors, appends the one-line directive pointer, and opens a gated turn for the retrieval-claim gate. |
 | `PreToolUse` | `Bash` | Runs `precheck.sh` automatically for a named risky-command class (`rm -rf`, `rsync --delete`, `systemctl`, `git push --force`, `kubectl delete`, `terraform apply`, `DROP TABLE`, …). Otherwise scores the command text. |
 | `PreToolUse` | `Edit\|Write` | Scores the file path and the edited text — the moment before a change is when a gotcha card is worth most. |
-| `PostToolUse` | `Bash` | Scores the command plus up to three error lines from its output. |
-| `PostToolUseFailure` | `*` | Same, for calls that failed outright. This is the highest-yield event: an error string is a near-perfect query. |
+| `PreToolUse` | *your report tool* | The retrieval-claim gate: DENIES a report whose `base:` line cites card ids that no explicit recall of this turn backs. Set the matcher and `KHMS_REPORT_TOOL` to the tool your agent reports to its principal through. |
+
+**`PostToolUse` and `PostToolUseFailure` are deliberately not wired.** They were, and the
+argument for them was good — "an error string is a near-perfect query" — but the measurement
+disagreed: **0 of 36** of their injections were ever cited in the next three assistant
+messages, against 23.2 % for operator messages. An argument that survives only because nobody
+measured it is the thing this whole system exists to prevent. Wire them back if your own
+`.inject.log` says something different; the code path is unchanged and the switch is one line
+in `tools/khms_experiment.json`. See [docs/measuring-injection.md](../docs/measuring-injection.md).
+
+**The reply directive is a file, not a constant.** `tools/prompts/report_directive.md` holds
+the three mandatory lines (`base:` / `verified:` / `if I were wrong:`). It enters the session
+once at `SessionStart`; every prompt afterwards carries a single pointer line. As a constant it
+was 1813 characters appended to every operator prompt — 46 times on one measured day, the same
+paragraph each time.
+
+**The retrieval-claim gate closes the loop on `base:`.** The mandatory line asks the agent to
+say what it searched for. Until the gate existed, that line was satisfiable from the hook's own
+injection — a check whose passing condition held whether or not a retrieval had happened, which
+is exactly the failure shape the base has a card about. The gate denies two things and nothing
+else: a substantial report with no `base:` line, and a `base:` line that cites card ids while no
+`src=cli` recall since the turn began matches the query it claims to have run. A line that cites
+no card, and every honest form ("did not search", "nothing on record"), always passes — the
+thing being checked is a CITATION, not the wording. Every verdict, including the allows, goes
+into `tools/.claim_gate.log`.
 
 The hook returns `{"hookSpecificOutput": {"hookEventName": …, "additionalContext": …}}` — the
 text lands in the model's context for that turn. Printing nothing means "no injection", which is
@@ -60,6 +83,11 @@ message learns to ignore all of them. The parameters live at the top of `khms_ho
 - **Dedup TTL: 12 hours per card per session.** Not "once per session": sessions run for days,
   and a card injected on Monday stayed silent on Thursday for the query it was written for.
 - **Query cooldown: 15 minutes** for the same text, so a retry loop does not re-inject.
+- **The budget is spent BEFORE the card base is loaded.** Every gate that needs no search
+  result runs first. Measured: 2324 calls in one day each paid ~172 ms to load a 2467-card base
+  and then died on the query cooldown or the rate cap — and each of them also wrote a
+  "nothing found" line into the retrieval log, which is how 87 % of the log that is supposed to
+  BE the record of retrieval came to be a record of non-retrievals.
 - **Length damping** `score × min(1, (85/distinct_tokens)^0.5)`. The score is a sum of per-token
   idf, so without this, long grab-bag cards win queries they have nothing to do with. The pivot
   is the median distinct-token count of your own base — measure it, do not copy 85.

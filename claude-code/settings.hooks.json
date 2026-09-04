@@ -1,5 +1,5 @@
 {
-  "_comment": "Merge into ~/.claude/settings.json (user-wide) or .claude/settings.json (project). Replace PATH_TO_KHMS with your KHMS_ROOT — hook commands do not expand shell variables. Remove the _comment keys.",
+  "_comment": "Merge into ~/.claude/settings.json (user-wide) or .claude/settings.json (project). Replace PATH_TO_KHMS with your KHMS_ROOT - hook commands do not expand shell variables. Remove the _comment keys. PostToolUse and PostToolUseFailure are deliberately absent: see claude-code/README.md and docs/measuring-injection.md.",
   "hooks": {
     "SessionStart": [
       {
@@ -33,23 +33,10 @@
             "timeout": 15
           }
         ]
-      }
-    ],
-    "PostToolUse": [
+      },
       {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 PATH_TO_KHMS/tools/khms_hook.py",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
-    "PostToolUseFailure": [
-      {
-        "matcher": "*",
+        "_comment": "The retrieval-claim gate. Replace the matcher with the tool through which your agent reports to its principal (a chat tool, a mail tool, a ticket tool); set KHMS_REPORT_TOOL to the same pattern. Remove this entry if you do not want reports gated.",
+        "matcher": "mcp__.*discord.*reply",
         "hooks": [
           {
             "type": "command",
